@@ -1,0 +1,73 @@
+#!/bin/bash
+set -u
+umask 077
+APP="${TRIM_APPDEST:?Missing TRIM_APPDEST}"
+VAR="${TRIM_PKGVAR:?Missing TRIM_PKGVAR}"
+PIDFILE="$VAR/fnsvn.pid"
+LOGFILE="$VAR/logs/fnsvn.log"
+PYTHON="$APP/runtime/bin/python3"
+export PATH="$APP/runtime/bin:$PATH"
+export PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1
+export FNSVN_DATA="$VAR/data" FNSVN_PORT="${TRIM_SERVICE_PORT:-18880}"
+# SVN port and repository path come from package-owned service-settings.json.
+
+fail() {
+    printf '%s\n' "$1" > "${TRIM_TEMP_LOGFILE:-/dev/stderr}"
+    exit 1
+}
+owned_process() {
+    [ -f "$PIDFILE" ] || return 1
+    IFS= read -r pid < "$PIDFILE" || return 1
+    case "$pid" in ''|*[!0-9]*) return 1 ;; esac
+    [ "$pid" -gt 1 ] || return 1
+    kill -0 "$pid" 2>/dev/null || return 1
+    [ "$(stat -c %u "/proc/$pid" 2>/dev/null)" = "$(id -u)" ] || return 1
+    tr '\0' '\n' < "/proc/$pid/cmdline" 2>/dev/null | grep -Fxq -- "$APP/server.py"
+}
+healthy() {
+    "$PYTHON" -c 'import os,urllib.request; urllib.request.build_opener(urllib.request.ProxyHandler({})).open("http://127.0.0.1:"+os.environ["FNSVN_PORT"]+"/api/health",timeout=2)' >/dev/null 2>&1
+}
+case "${1:-}" in
+    start)
+        if owned_process; then
+            healthy && exit 0
+            fail 'FnSVN process exists but is unhealthy. Stop the application, inspect logs, and restart.'
+        fi
+        [ -x "$PYTHON" ] || fail 'Bundled Python runtime is missing or not executable. Reinstall this application.'
+        for command in svn svnadmin svnlook svnserve; do
+            [ -x "$APP/runtime/bin/$command" ] || fail "Bundled SVN command is missing: $command"
+        done
+        mkdir -p "$VAR/data" "$VAR/logs" || fail 'Cannot create application data and log directories.'
+        if [ -f "$LOGFILE" ] && [ "$(wc -c < "$LOGFILE")" -gt 10485760 ]; then
+            mv -f "$LOGFILE" "$LOGFILE.1"
+        fi
+        cd "$APP" || exit 1
+        nohup "$PYTHON" -u "$APP/service-settings.py" run >> "$LOGFILE" 2>&1 &
+        pid=$!
+        printf '%s\n' "$pid" > "$PIDFILE"
+        for ((attempt=0; attempt<30; attempt++)); do
+            kill -0 "$pid" 2>/dev/null || fail "FnSVN exited during startup. See $LOGFILE."
+            if owned_process && healthy; then exit 0; fi
+            sleep 1
+        done
+        if owned_process; then kill -TERM "$pid" 2>/dev/null || true; fi
+        fail "FnSVN did not become healthy. See $LOGFILE."
+        ;;
+    stop)
+        if owned_process; then
+            kill -TERM "$pid" || fail 'Cannot stop the FnSVN process.'
+            for ((attempt=0; attempt<30; attempt++)); do
+                owned_process || break
+                sleep 1
+            done
+            if owned_process; then kill -KILL "$pid" || fail 'Cannot terminate the FnSVN process.'; fi
+        fi
+        rm -f "$PIDFILE"
+        exit 0
+        ;;
+    status)
+        owned_process && healthy && exit 0
+        exit 3
+        ;;
+    *) fail "Unknown lifecycle command: ${1:-}" ;;
+esac

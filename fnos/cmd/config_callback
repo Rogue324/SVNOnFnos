@@ -1,0 +1,4 @@
+#!/bin/bash
+set -eu
+# Application Center owns the lifecycle; apply settings without a second service start.
+exec "$TRIM_APPDEST/runtime/bin/python3" "$TRIM_APPDEST/service-settings.py" apply

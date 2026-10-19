@@ -1,0 +1,13 @@
+{
+  ".url": {
+    "fnsvn.main": {
+      "title": "FnSVN 版本管理",
+      "icon": "images/icon_{0}.png",
+      "type": "iframe",
+      "protocol": "http",
+      "port": "18880",
+      "url": "/",
+      "allUsers": true
+    }
+  }
+}

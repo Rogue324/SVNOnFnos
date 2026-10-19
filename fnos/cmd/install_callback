@@ -1,0 +1,4 @@
+#!/bin/bash
+set -eu
+/bin/bash "$TRIM_APPDEST/prepare-runtime.sh"
+exec "$TRIM_APPDEST/runtime/bin/python3" "$TRIM_APPDEST/service-settings.py" apply

@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="color-scheme" content="light">
+  <title>FnSVN · 版本管理</title>
+  <link rel="stylesheet" href="/style.css">
+  <script src="/app.js" defer></script>
+</head>
+<body>
+  <div id="auth-screen" class="auth-screen" hidden>
+    <section class="auth-card">
+      <div class="brand-mark" data-icon="folder"></div>
+      <p class="eyebrow">FNSVN / 飞牛应用</p>
+      <h1 id="auth-title">欢迎回来</h1>
+      <p class="muted" id="auth-description">登录 Web 管理控制台，管理你的版本资产。</p>
+      <form id="auth-form">
+        <label>管理员用户名<input name="username" disabled autocomplete="username" required maxlength="64" pattern="[A-Za-z][A-Za-z0-9_\-]{0,63}" title="以英文字母开头，可包含字母、数字、连字符和下划线，最多 64 个字符" placeholder="请输入管理员用户名"></label>
+        <label>密码<input name="password" disabled type="password" autocomplete="current-password" required placeholder="请输入密码"></label>
+        <p id="auth-error" class="form-error" role="alert"></p>
+        <button class="button primary" id="auth-submit" type="submit">登录控制台 <span>→</span></button>
+      </form>
+      <p class="auth-note">此账户仅用于 Web 管理。SVN 客户端账户在登录后单独创建。</p>
+    </section>
+    <div class="auth-caption"><span class="status-dot"></span> 私有部署 · 数据由你掌握</div>
+  </div>
+
+  <div id="app" class="app-shell" hidden>
+    <aside class="sidebar">
+      <a class="brand" href="#repositories"><span class="brand-mark" data-icon="folder"></span><span>FnSVN<small>版本管理控制台</small></span></a>
+      <div class="sidebar-label">工作空间</div>
+      <nav aria-label="主导航">
+        <button class="nav-item active" data-view="repositories"><span class="nav-icon" data-icon="grid"></span> 仓库管理 <span id="repo-count" class="nav-count">0</span></button>
+        <button class="nav-item" data-view="users"><span class="nav-icon" data-icon="users"></span> SVN 账户</button>
+        <button class="nav-item" data-view="backups"><span class="nav-icon" data-icon="backup"></span> 仓库备份</button>
+      </nav><div class="sidebar-label system-label">系统</div><button class="nav-item" data-view="settings"><span class="nav-icon" data-icon="settings"></span> 系统设置</button>
+      <div class="sidebar-bottom">
+        <div class="service-status"><span class="status-dot" id="service-dot"></span><div id="service-status">正在检测服务<small>SVN · 正在检测端口</small></div></div>
+        <button id="logout" class="logout-button">退出管理控制台 <span>↗</span></button>
+      </div>
+    </aside>
+    <div class="workspace">
+      <header class="topbar"><label class="global-search"><span data-icon="search"></span><input id="global-search" type="search" placeholder="搜索仓库，快速开始…" aria-label="全局搜索仓库"><kbd>搜索</kbd></label><div class="topbar-breadcrumb"><span class="breadcrumb">工作空间</span><span class="slash">/</span><span id="breadcrumb-current">仓库管理</span></div><div class="topbar-right"><span class="private-badge"><span class="status-dot"></span> 私有部署</span><span class="admin-avatar">A</span><span class="admin-label">Web 管理员</span></div></header>
+      <main id="main-content">
+        <section class="page-heading"><div><p class="eyebrow">你的版本工作空间</p><h1 id="page-title">仓库管理</h1><p id="page-description" class="muted">让每一次修改，都有迹可循。</p></div><button id="page-action" class="button primary">＋ 新建仓库</button></section>
+        <div id="service-warning" class="notice warning" hidden>未检测到 Subversion 命令。请检查应用自带的 SVN 运行依赖及服务日志。</div>
+        <div id="view-content" aria-live="polite"></div>
+      </main>
+      <footer>FnSVN <span>为飞牛打造的轻量版本管理</span><span class="footer-right">SUBVERSION · SELF HOSTED</span></footer>
+    </div>
+  </div>
+  <div id="loading-screen" class="loading-screen"><span class="spinner"></span> 正在连接 FnSVN…</div>
+  <div id="toast" class="toast" role="status" hidden></div>
+  <dialog id="modal" aria-labelledby="modal-title"><div class="modal-heading"><div><p class="eyebrow" id="modal-eyebrow">FNSVN</p><h2 id="modal-title"></h2></div><button class="icon-button" id="modal-close" aria-label="关闭">×</button></div><div id="modal-body"></div></dialog>
+</body>
+</html>

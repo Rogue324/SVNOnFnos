@@ -1,0 +1,10 @@
+.venv/
+__pycache__/
+*.pyc
+.tools/
+data/
+dist/
+*.fpk
+fnos/app/server.py
+fnos/app/static/
+fnos/app/runtime/

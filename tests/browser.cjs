@@ -1,7 +1,6 @@
 // Run: node tests/browser.cjs (playwright required; server listening on FNSVN_TEST_URL).
 const { chromium } = require(process.env.PLAYWRIGHT_MODULE || 'playwright');
 const assert = require('node:assert/strict');
-const fs = require('node:fs');
 const http = require('node:http');
 async function main() {
   const browser = await chromium.launch({ headless: true });
@@ -54,10 +53,7 @@ async function main() {
   await page.locator('[data-view=backups]').click();
   await page.getByRole('link', { name: '↓ 下载备份' }).waitFor();
   await page.locator('[data-view=repositories]').click();
-  fs.mkdirSync('docs', { recursive: true });
-  await outer.screenshot({ path: 'docs/management-preview.png', fullPage: true });
   await outer.setViewportSize({ width: 390, height: 844 });
-  await outer.screenshot({ path: 'docs/mobile-preview.png', fullPage: true });
   assert.equal(await page.locator('body').evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), true, 'mobile horizontal overflow');
   await page.locator('#logout').click();
   await page.locator('#auth-screen').waitFor({ state: 'visible' });

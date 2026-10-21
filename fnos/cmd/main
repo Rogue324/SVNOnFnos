@@ -8,7 +8,7 @@ LOGFILE="$VAR/logs/fnsvn.log"
 PYTHON="$APP/runtime/bin/python3"
 export PATH="$APP/runtime/bin:$PATH"
 export PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1
-export FNSVN_DATA="$VAR/data" FNSVN_PORT="${TRIM_SERVICE_PORT:-18880}"
+export FNSVN_DATA="$VAR/data"
 # SVN port and repository path come from package-owned service-settings.json.
 
 fail() {
@@ -25,7 +25,23 @@ owned_process() {
     tr '\0' '\n' < "/proc/$pid/cmdline" 2>/dev/null | grep -Fxq -- "$APP/server.py"
 }
 healthy() {
-    "$PYTHON" -c 'import os,urllib.request; urllib.request.build_opener(urllib.request.ProxyHandler({})).open("http://127.0.0.1:"+os.environ["FNSVN_PORT"]+"/api/health",timeout=2)' >/dev/null 2>&1
+    "$PYTHON" - "$APP/app.sock" <<'PY' >/dev/null 2>&1
+import http.client
+import socket
+import sys
+
+connection = http.client.HTTPConnection("localhost", timeout=2)
+connection.sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+connection.sock.settimeout(2)
+try:
+    connection.sock.connect(sys.argv[1])
+    connection.request("GET", "/app/fnsvn/api/health")
+    response = connection.getresponse()
+    response.read()
+    sys.exit(0 if response.status == 200 else 1)
+finally:
+    connection.close()
+PY
 }
 case "${1:-}" in
     start)

@@ -84,7 +84,8 @@ def main():
         # Re-enter the wrapper so the bundled ELF loader and library paths survive exec.
         python = str(app / "runtime" / "bin" / "python3")
         os.execv(python, [python, "-u", str(app / "server.py"),
-                 "--data", str(path.parent / "data"), "--port", os.environ.get("FNSVN_PORT", "18880"),
+                 "--data", str(path.parent / "data"), "--unix-socket", str(app / "app.sock"),
+                 "--base-path", "/app/fnsvn",
                  "--svn-port", str(value["svn_port"]), "--repos", value["repos_path"], "--settings-file", str(path)])
     else:
         raise ValueError("Unknown settings action")

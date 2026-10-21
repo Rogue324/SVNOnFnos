@@ -1,12 +1,13 @@
 {
   ".url": {
     "fnsvn.main": {
-      "title": "FnSVN 版本管理",
+      "title": "FnSVN",
       "icon": "images/icon_{0}.png",
       "type": "iframe",
-      "protocol": "http",
-      "port": "18880",
-      "url": "/",
+      "protocol": "",
+      "gatewayPrefix": "/app/fnsvn",
+      "gatewaySocket": "app.sock",
+      "url": "/app/fnsvn",
       "allUsers": true
     }
   }

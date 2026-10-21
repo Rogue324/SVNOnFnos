@@ -4,14 +4,17 @@ const assert = require('node:assert/strict');
 const http = require('node:http');
 async function main() {
   const browser = await chromium.launch({ headless: true });
-  const outer = await browser.newPage({ viewport: { width: 1440, height: 1000 } });
+  const outer = await browser.newPage({ viewport: { width: 1440, height: 1000 }, ignoreHTTPSErrors: process.env.FNSVN_TEST_IGNORE_HTTPS === '1' });
   let page = outer;
   let desktop;
   const errors = [];
   outer.on('pageerror', e => errors.push(e.message));
   outer.on('console', e => { if (e.type() === 'error') errors.push(e.text()); });
   const target = process.env.FNSVN_TEST_URL || 'http://127.0.0.1:18880';
-  if (process.env.FNSVN_TEST_IFRAME === '1') {
+  if (process.env.FNSVN_TEST_DESKTOP_URL) {
+    await outer.goto(process.env.FNSVN_TEST_DESKTOP_URL);
+    page = outer.frameLocator('#fnos-app');
+  } else if (process.env.FNSVN_TEST_IFRAME === '1') {
     // Embed from another port, as the HTTP fnOS desktop does.
     desktop = http.createServer((req, res) => {
       res.setHeader('Content-Type', 'text/html; charset=utf-8');
@@ -26,7 +29,9 @@ async function main() {
   await page.locator('#auth-form input[name=password]').fill('preview-admin-password');
   await page.locator('#auth-submit').click();
   await page.locator('#app').waitFor({ state: 'visible' });
-  const overview = await page.locator('body').evaluate(async () => (await fetch('/api/overview')).json());
+  const queryPath = await page.locator('body').evaluate(() => appUrl('/api/repositories/GameProject?path=a%2Fb'));
+  assert.ok(queryPath.endsWith('/api/repositories/GameProject?path=a%2Fb'), 'repository subdirectory query preserved');
+  const overview = await page.locator('body').evaluate(async () => (await fetch(new URL('api/overview', document.baseURI))).json());
   assert.equal(await page.locator('#repository-storage-path').textContent(), overview.repositoriesPath);
   assert.ok((await page.locator('#active-svn-port').textContent()).includes(String(overview.svnPort)));
   await page.locator('#page-action').click();
@@ -51,7 +56,13 @@ async function main() {
   await page.locator('[data-backup=GameProject]').click();
   await page.getByText(/备份已创建：/).waitFor();
   await page.locator('[data-view=backups]').click();
-  await page.getByRole('link', { name: '↓ 下载备份' }).waitFor();
+  const backup = page.getByRole('link', { name: '下载备份', exact: true });
+  await backup.waitFor();
+  const downloadPath = await backup.getAttribute('href');
+  const expectedBase = new URL(target).pathname.replace(/\/$/, '');
+  assert.ok(downloadPath.startsWith(expectedBase + '/api/backups/'), 'backup stays under application path');
+  const [download] = await Promise.all([outer.waitForEvent('download'), backup.click()]);
+  assert.equal(await download.failure(), null, 'backup download succeeds with session cookie');
   await page.locator('[data-view=repositories]').click();
   await outer.setViewportSize({ width: 390, height: 844 });
   assert.equal(await page.locator('body').evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), true, 'mobile horizontal overflow');

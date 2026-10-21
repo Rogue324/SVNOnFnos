@@ -5,6 +5,10 @@ const state = { view: 'repositories', overview: null, detail: null, path: '', ta
 const titles = { settings: ['系统设置', '管理仓库保存位置与客户端连接地址。', '刷新设置'], repositories: ['仓库管理', '让每一次修改，都有迹可循。', '＋ 新建仓库'], users: ['SVN 账户', '管理用于 SVN 客户端连接和提交的独立账户。', '＋ 新建账户'], backups: ['仓库备份', '保存完整版本历史，为你的项目多一份保障。', '刷新备份'] };
 const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const segment = value => encodeURIComponent(value);
+const appUrl = path => {
+  const url = new URL(path.replace(/^\//, ''), document.baseURI);
+  return url.pathname + url.search;
+};
 const repoApi = name => `/api/repositories/${segment(name)}`;
 const content = () => $('#view-content');
 let toastTimer;
@@ -26,7 +30,7 @@ async function api(url, options = {}) {
   const headers = { ...(options.headers || {}) };
   if (options.method && options.method !== 'GET') headers['X-FnSVN-Request'] = '1';
   if (options.body !== undefined) headers['Content-Type'] = 'application/json';
-  const response = await fetch(url, { ...options, headers, credentials: 'same-origin', body: options.body === undefined ? undefined : JSON.stringify(options.body) });
+  const response = await fetch(appUrl(url), { ...options, headers, credentials: 'same-origin', body: options.body === undefined ? undefined : JSON.stringify(options.body) });
   let data;
   try { data = await response.json(); } catch { data = {}; }
   if (!response.ok) {
@@ -170,7 +174,7 @@ function formatSize(size) {
 }
 
 function renderBackups(backups) {
-  content().innerHTML = `<div class="notice">在仓库详情中创建备份。备份文件包含仓库的 SVN dump 版本历史，可下载到其他设备保存；备份不包含账户密码和访问权限配置。</div><div class="section-toolbar"><h2>备份文件 <span>${backups.length} 个文件</span></h2></div>${backups.length ? `<div class="data-panel table-scroll"><table><thead><tr><th>文件名称</th><th>文件大小</th><th>操作</th></tr></thead><tbody>${backups.map(backup => `<tr><td><strong>${esc(backup.filename)}</strong></td><td>${formatSize(backup.size)}</td><td><a class="button small" href="/api/backups/${segment(backup.filename)}" download>下载备份</a></td></tr>`).join('')}</tbody></table></div>` : emptyState('◷', '尚无备份', '打开一个仓库，点击「创建备份」保存完整版本历史。')}`;
+  content().innerHTML = `<div class="notice">在仓库详情中创建备份。备份文件包含仓库的 SVN dump 版本历史，可下载到其他设备保存；备份不包含账户密码和访问权限配置。</div><div class="section-toolbar"><h2>备份文件 <span>${backups.length} 个文件</span></h2></div>${backups.length ? `<div class="data-panel table-scroll"><table><thead><tr><th>文件名称</th><th>文件大小</th><th>操作</th></tr></thead><tbody>${backups.map(backup => `<tr><td><strong>${esc(backup.filename)}</strong></td><td>${formatSize(backup.size)}</td><td><a class="button small" href="${appUrl(`/api/backups/${segment(backup.filename)}`)}" download>下载备份</a></td></tr>`).join('')}</tbody></table></div>` : emptyState('◷', '尚无备份', '打开一个仓库，点击「创建备份」保存完整版本历史。')}`;
 }
 
 async function openRepository(name, tab = 'files', path = '') {

@@ -1,13 +1,12 @@
 appname=fnsvn
-version=0.4.0
-display_name=FnSVN 版本管理
+version=0.5.0
+display_name=FnSVN
 desc=Subversion repository, user and permission management for fnOS.
 platform=x86
+os_min_version=1.1.3100
 source=thirdparty
 maintainer=FnSVN
 distributor=FnSVN
 desktop_uidir=ui
 desktop_applaunchname=fnsvn.main
-service_port=18880
-checkport=true
 ctl_stop=true

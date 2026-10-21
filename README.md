@@ -2,7 +2,7 @@
 
 为飞牛 fnOS 打造的原生 Subversion 管理应用。FnSVN 以 FPK 应用包安装，自带 Python 与 Subversion 运行库，在应用中心完成启动、停止和运行状态检查，并通过中文 Web 控制台管理仓库、SVN 账户与访问权限。
 
-当前版本：**0.4.0** · 平台：**x86-64 fnOS** · 许可协议：**MIT**
+当前版本：**0.5.0** · 平台：**x86-64 fnOS** · 许可协议：**MIT**
 
 ## 功能
 
@@ -16,8 +16,8 @@
 
 ## 环境要求
 
-- x86-64 架构的飞牛 fnOS 设备，当前版本不支持 ARM。
-- 管理端口 `18880` 与配置的 SVN 端口保持空闲，端口范围为 `1024–65535`。
+- x86-64 架构的飞牛 fnOS 设备，国内版最低版本 `1.1.3100`（按官方统一网关 Native 案例声明）；当前版本不支持 ARM。
+- 配置的 SVN 端口保持空闲，端口范围为 `1024–65535`；Web 管理界面通过飞牛统一网关访问，不占用独立 TCP 端口。
 - 自定义仓库目录需要事先授予 `fnsvn` 应用用户读写权限。
 
 安装包已经包含 Debian 12 amd64 的 Python 3.11、Subversion 及私有动态库，无需在 NAS 上额外安装运行环境，也不会修改系统级软件包。
@@ -35,9 +35,9 @@ powershell -ExecutionPolicy Bypass -File scripts/build-fpk.ps1
 1. 设置 SVN 端口，默认 `3690`。
 2. 设置仓库根目录；留空时使用应用私有目录 `data/repos`。
 3. 选择是否启用 Web 登录验证，默认启用。
-4. 启动 FnSVN，从应用卡片或桌面入口打开管理页，也可直接访问 `http://NAS地址:18880`。
+4. 启动 FnSVN，从应用卡片或桌面入口打开管理页。Web 地址为飞牛当前访问地址下的 `/app/fnsvn`，局域网与公网远程入口均复用飞牛的域名、协议和会话校验。
 
-启用 Web 登录验证时，首次打开管理页需要创建 Web 管理员。该账户仅用于管理控制台，与 SVN 客户端账户相互独立。
+飞牛统一网关先校验 NAS 登录会话，FnSVN 再按应用设置校验 Web 管理权限。启用 Web 登录验证时，首次打开管理页需要创建 Web 管理员；该账户与 NAS 账户、SVN 客户端账户相互独立。网关确认 NAS 用户已登录，不会自动授予 FnSVN 管理权限。
 
 ## 快速开始
 
@@ -51,6 +51,8 @@ svn checkout svn://NAS地址:3690/仓库名
 ```
 
 默认端口 `3690` 在生成的地址中可以省略；使用其他端口时会保留端口，例如 `svn://NAS地址:13690/仓库名`。
+
+飞牛统一网关承载 Web 管理界面的 HTTP 请求，不转发 `svn://` TCP 连接。远程检出和提交仍需确保 SVN 客户端可通过 VPN 或其他受控网络连接到配置的 SVN 端口；仅能远程打开飞牛桌面不代表 SVN 端口可达。
 
 ## 已有仓库迁移
 
@@ -95,11 +97,11 @@ svnadmin verify /path/to/restored-repo
 
 ## 安全说明
 
-- Web 管理默认使用 HTTP，SVN 使用原生 `svn://` 协议，二者都不加密传输内容，建议仅部署在可信局域网；远程访问请使用 VPN 或受控的安全入口。
-- 关闭「Web 登录验证」后，任何能访问 `18880` 管理端口的人都可以管理仓库、账户和设置。该开关不会影响 SVN 客户端认证，也不会复用飞牛登录会话。
+- Web 管理使用飞牛统一网关 `/app/fnsvn`，跟随飞牛访问地址使用 HTTP 或 HTTPS；应用服务只监听 `${TRIM_APPDEST}/app.sock`，不对外开放 Web TCP 端口。远程访问应使用飞牛提供的 HTTPS 入口。SVN 使用独立的原生 `svn://` TCP 协议，本身不加密，远程检出和提交请通过 VPN 或其他受控安全网络。
+- 关闭「Web 登录验证」后，任何通过飞牛会话校验且能访问 FnSVN 入口的人都可以管理仓库、账户和设置。此开关只关闭应用自身的管理员登录，不会关闭网关的 NAS 会话校验，也不会影响 SVN 客户端认证。
 - 当前授权粒度为仓库根目录，不提供子目录级 `authz`。
 - 暂不支持在线 dump 恢复、定时备份和普通 SVN 用户的 Web 登录。
-- 飞牛桌面通过 HTTPS 加载管理页时，浏览器可能拦截 HTTP iframe；当前版本尚未提供同域 HTTPS 网关。
+- Socket 文件允许系统网关连接；本机进程也可能连接该 Socket，因此 Web 管理员登录默认启用，应用不把客户端传入的用户 Header 当作业务授权。
 
 关于 SVN 客户端重复提示登录，请参阅 [认证排查说明](docs/authentication.md)。
 
@@ -156,8 +158,21 @@ node tests/browser.cjs
 | `FNSVN_TEST_URL` | 覆盖浏览器测试地址 |
 | `PLAYWRIGHT_MODULE` | 指定 Playwright 模块路径 |
 | `FNSVN_TEST_IFRAME=1` | 测试跨端口 iframe 嵌入流程 |
+| `FNSVN_TEST_DESKTOP_URL` | 测试带 `#fnos-app` iframe 的桌面模拟页面 |
 
-后端也支持通过 `--data`、`--port`、`--svn-port`、`--repos` 和 `--settings-file` 指定运行参数。
+`tests/test_gateway.py` 验证网关前缀、登录会话与备份下载；支持 Unix Socket 的 Python 还会验证真实 Socket 权限、陈旧 Socket 恢复及退出清理。Windows Python 缺少 `AF_UNIX` 时，HTTP 测试通过本机 TCP 运行，Unix 专用测试跳过。
+
+`tests/gateway-browser.cjs` 自动启动临时 SVN/Web 后端和 HTTPS 网关模拟器，验证同域 HTTPS iframe 下的创建仓库、账户、权限、备份下载和退出登录。需 Playwright、SVN 和测试证书：
+
+```powershell
+$env:FNSVN_TEST_CERT = 'C:\path\to\test.crt'
+$env:FNSVN_TEST_KEY = 'C:\path\to\test.key'
+node tests/gateway-browser.cjs
+```
+
+此模拟测试不替代 fnOS 实机的网关注册和 NAS 会话校验验证。
+
+后端也支持通过 `--data`、`--port`、`--svn-port`、`--repos` 和 `--settings-file` 指定运行参数。Linux 上可使用 `--unix-socket /path/to/app.sock --base-path /app/fnsvn` 测试网关后端；FPK 固定使用该 Unix Socket 模式，不启用 Web TCP 监听。
 
 ## 项目结构
 
@@ -175,7 +190,7 @@ FPK 封装细节、生命周期和数据目录说明见 [fnos/README.md](fnos/RE
 
 ## 验证边界
 
-本项目已完成 Windows 本地 SVN 检出、提交、只读拒写、账户认证、dump 备份与恢复、Web 认证和设置保存/迁移约束测试，并对 Linux 运行库的 ELF 架构和动态依赖闭包、FPK 包结构进行了检查。发布前仍应在真实 x86-64 fnOS 设备上验证安装权限、应用启停、桌面入口、实际提交、重启持久化以及升级后的数据保留。
+本项目已完成 Windows 本地 SVN 检出、提交、只读拒写、账户认证、dump 备份与恢复、Web 认证和设置保存/迁移约束测试，并对 Linux 运行库的 ELF 架构和动态依赖闭包、FPK 包结构进行了检查。统一网关的本地验证不能替代 NAS 实测。发布前仍应在真实 x86-64 fnOS 设备上验证安装权限、应用启停、局域网及公网远程桌面入口、登录和备份下载、实际提交、重启持久化以及升级后的数据保留。
 
 ## 许可证
 

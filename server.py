@@ -18,6 +18,7 @@ import secrets
 import shutil
 import signal
 import socket
+import stat
 import subprocess
 import sys
 import tempfile
@@ -28,6 +29,51 @@ import xml.etree.ElementTree as ET
 
 NAME = re.compile(r"[A-Za-z][A-Za-z0-9_-]{0,63}\Z")
 STATIC = Path(__file__).parent / "static"
+
+
+class UnixHTTPServer(ThreadingHTTPServer):
+    """HTTP over the local socket registered with the fnOS gateway."""
+    address_family = getattr(socket, "AF_UNIX", None)
+
+    def __init__(self, *args, **kwargs):
+        if self.address_family is None:
+            raise RuntimeError("Unix sockets require a Python build with AF_UNIX support")
+        super().__init__(*args, **kwargs)
+
+    def server_bind(self):
+        path = Path(self.server_address)
+        if path.exists() or path.is_symlink():
+            if not stat.S_ISSOCK(path.lstat().st_mode):
+                raise RuntimeError(f"Refusing to replace non-socket file: {path}")
+            with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as probe:
+                try:
+                    probe.connect(str(path))
+                except OSError as exc:
+                    if exc.errno != errno.ECONNREFUSED:
+                        raise
+                else:
+                    raise RuntimeError(f"Gateway socket is already in use: {path}")
+            path.unlink()
+        self.socket.bind(str(path))
+        self.socket_identity = (path.stat().st_dev, path.stat().st_ino)
+        # The system gateway runs under a different identity from the package.
+        # Only the socket is shared; package/data directory permissions stay private.
+        path.chmod(0o666)
+        self.server_name, self.server_port = "localhost", 0
+
+    def get_request(self):
+        connection, _ = self.socket.accept()
+        return connection, ("unix-gateway", 0)
+
+    def server_close(self):
+        super().server_close()
+        path = Path(self.server_address)
+        try:
+            if (getattr(self, "socket_identity", None) == (path.lstat().st_dev, path.lstat().st_ino)
+                    and stat.S_ISSOCK(path.lstat().st_mode)):
+                path.unlink()
+        except FileNotFoundError:
+            pass
 
 
 class Error(Exception):
@@ -159,7 +205,8 @@ def start_svn(store, requested=3690):
     child = None
     try:
         with (store.root / "svnserve.log").open("w+b") as errors:
-            child = subprocess.Popen(["svnserve", "--daemon", "--foreground", "--threads", "--root", str(store.repos),
+            # Windows svnserve always uses threads and rejects the POSIX-only option.
+            child = subprocess.Popen(["svnserve", "--daemon", "--foreground", *([] if os.name == "nt" else ["--threads"]), "--root", str(store.repos),
                                       "--listen-host", "0.0.0.0", "--listen-port", str(port)], stderr=errors)
             deadline = time.monotonic() + 5
             while time.monotonic() < deadline and child.poll() is None:
@@ -737,7 +784,7 @@ def save_settings(server, body):
 
 
 class Handler(BaseHTTPRequestHandler):
-    server_version = "FnSVN/0.4.0"
+    server_version = "FnSVN/0.5.0"
 
     def log_message(self, fmt, *args):
         # Do not log cookies, credentials or request bodies.
@@ -746,6 +793,10 @@ class Handler(BaseHTTPRequestHandler):
     @property
     def store(self):
         return self.server.store
+
+    @property
+    def cookie_path(self):
+        return getattr(self.server, "base_path", "") + "/"
 
     def send(self, status, body, content_type="application/json; charset=utf-8", extra=None):
         if isinstance(body, (dict, list)):
@@ -825,10 +876,15 @@ class Handler(BaseHTTPRequestHandler):
                 self.store.sessions.clear()
             token = secrets.token_urlsafe(32)
             self.store.sessions[token] = time.time() + 8 * 3600
-        self.send(200, {"ok": True}, extra={"Set-Cookie": f"fnsvn_session={token}; HttpOnly; SameSite=Strict; Path=/; Max-Age=28800"})
+        self.send(200, {"ok": True}, extra={"Set-Cookie": f"fnsvn_session={token}; HttpOnly; SameSite=Strict; Path={self.cookie_path}; Max-Age=28800"})
 
     def dispatch(self):
         parsed = urlsplit(self.path)
+        prefix = getattr(self.server, "base_path", "")
+        if prefix:
+            if parsed.path != prefix and not parsed.path.startswith(prefix + "/"):
+                raise Error("页面不存在", 404)
+            parsed = parsed._replace(path=parsed.path[len(prefix):] or "/")
         parts = [unquote(p) for p in parsed.path.strip("/").split("/")]
         method = self.command
         if method != "GET" and self.headers.get("X-FnSVN-Request") != "1":
@@ -853,7 +909,10 @@ class Handler(BaseHTTPRequestHandler):
             if parsed.path not in files:
                 raise Error("页面不存在", 404)
             filename, mime = files[parsed.path]
-            return self.send(200, (STATIC / filename).read_bytes(), mime)
+            payload = (STATIC / filename).read_bytes()
+            if filename == "index.html":
+                payload = payload.replace(b"__FNSVN_BASE_PATH__", prefix.encode())
+            return self.send(200, payload, mime)
         if not self.authenticated():
             raise Error("请先登录", 401)
         if self.server.maintenance and method != "GET":
@@ -868,7 +927,7 @@ class Handler(BaseHTTPRequestHandler):
             cookie = cookies.SimpleCookie(self.headers.get("Cookie", ""))
             with self.store.lock:
                 self.store.sessions.pop(cookie["fnsvn_session"].value, None)
-            return self.send(200, {"ok": True}, extra={"Set-Cookie": "fnsvn_session=; Path=/; Max-Age=0; HttpOnly; SameSite=Strict"})
+            return self.send(200, {"ok": True}, extra={"Set-Cookie": f"fnsvn_session=; Path={self.cookie_path}; Max-Age=0; HttpOnly; SameSite=Strict"})
         if parts == ["api", "overview"] and method == "GET":
             with self.store.lock:
                 return self.send(200, {"repositories": [self.store.summary(k) for k in self.store.state["repositories"]],
@@ -963,25 +1022,33 @@ def main():
     parser.add_argument("--data", default=os.getenv("FNSVN_DATA", "data"))
     parser.add_argument("--host", default=os.getenv("FNSVN_HOST", "0.0.0.0"))
     parser.add_argument("--port", type=int, default=int(os.getenv("FNSVN_PORT", "18880")))
+    parser.add_argument("--unix-socket", help="Serve HTTP through the fnOS gateway socket instead of a TCP port")
+    parser.add_argument("--base-path", default="", help="Public gateway path, for example /app/fnsvn")
     parser.add_argument("--svn-port", type=port_number, default=os.getenv("FNSVN_SVN_PORT", "3690"),
                         help="SVN listening port (default: 3690); occupied ports fail without switching")
     parser.add_argument("--repos", default=os.getenv("FNSVN_REPOS"), help="Repository storage directory (default: DATA/repos)")
     parser.add_argument("--settings-file", default=os.getenv("FNSVN_SETTINGS_FILE"), help="Persisted fnOS service settings file")
     parser.add_argument("--web-only", action="store_true", help="Development only: do not start svnserve")
     args = parser.parse_args()
+    if args.base_path and not re.fullmatch(r"(/[A-Za-z0-9_-]+)+", args.base_path):
+        parser.error("--base-path must contain URL-safe path segments without a trailing slash")
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     if os.name != "nt":
         os.umask(0o077)
     settings_file = Path(args.settings_file).resolve() if args.settings_file else Path(args.data).resolve() / "config/service-settings.json"
     saved_settings = json.loads(settings_file.read_text("utf-8")) if settings_file.exists() else {}
+    auth_required = saved_settings.get("web_auth_required", True)
+    if not isinstance(auth_required, bool):
+        raise RuntimeError("web_auth_required must be true or false in service settings")
+    svn_host = connection_host(saved_settings.get("svn_host", ""))
     store = Store(args.data, args.repos or saved_settings.get("repos_path"))
-    http = ThreadingHTTPServer((args.host, args.port), Handler)
+    http = (UnixHTTPServer(args.unix_socket, Handler) if args.unix_socket
+            else ThreadingHTTPServer((args.host, args.port), Handler))
+    http.base_path = args.base_path
     http.store = store
     http.settings_file = settings_file
-    http.svn_host = connection_host(saved_settings.get("svn_host", ""))
-    http.auth_required = saved_settings.get("web_auth_required", True)
-    if not isinstance(http.auth_required, bool):
-        raise RuntimeError("web_auth_required must be true or false in service settings")
+    http.svn_host = svn_host
+    http.auth_required = auth_required
     http.maintenance = False
     http.settings_lock = threading.Lock()
     http.stop_event = threading.Event()
@@ -1012,7 +1079,8 @@ def main():
         signal.signal(signal.SIGTERM, shutdown)
         signal.signal(signal.SIGINT, shutdown)
         threading.Thread(target=watch, daemon=True).start()
-        logging.info("FnSVN listening on %s:%s", args.host, args.port)
+        logging.info("FnSVN listening on %s (base path %s)",
+                     args.unix_socket or f"{args.host}:{args.port}", args.base_path or "/")
         http.serve_forever(poll_interval=0.5)
     finally:
         http.server_close()

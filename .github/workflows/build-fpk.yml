@@ -1,0 +1,83 @@
+name: Build FnSVN FPK
+
+on:
+  workflow_dispatch:
+    inputs:
+      create_draft_release:
+        description: Create a draft release (select an existing v<version> tag)
+        type: boolean
+        required: true
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build ${{ matrix.arch }} FPK
+    runs-on: windows-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [amd64, arm64]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Verify selected tag matches manifest for draft release
+        if: ${{ inputs.create_draft_release }}
+        shell: pwsh
+        env:
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          if ($env:REF_TYPE -ne 'tag') { throw 'Select an existing version tag before creating a draft release.' }
+          $line = Get-Content fnos/manifest | Where-Object { $_ -match '^version\s*=' }
+          if (@($line).Count -ne 1) { throw 'Expected exactly one manifest version.' }
+          $version = ($line -split '=', 2)[1].Trim()
+          if ($env:REF_NAME -ne "v$version") { throw "Tag must be v$version, got $env:REF_NAME" }
+      - name: Build and audit runtime and FPK
+        shell: pwsh
+        run: |
+          ./scripts/build-fpk.ps1 -Architecture '${{ matrix.arch }}' -PythonPath (Get-Command python).Source
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Verify FPK manifest and generate SHA256
+        shell: pwsh
+        run: |
+          python scripts/verify-fpk.py 'dist/fnsvn-${{ matrix.arch }}.fpk' --arch '${{ matrix.arch }}'
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: fnsvn-${{ matrix.arch }}
+          path: |
+            dist/fnsvn-${{ matrix.arch }}.fpk
+            dist/fnsvn-${{ matrix.arch }}.fpk.sha256
+          if-no-files-found: error
+          retention-days: 30
+
+  draft-release:
+    if: ${{ inputs.create_draft_release }}
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: packages
+          merge-multiple: true
+      - name: Create draft GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -eu
+          cd packages
+          sha256sum -c fnsvn-amd64.fpk.sha256
+          sha256sum -c fnsvn-arm64.fpk.sha256
+          gh release create "$TAG" --verify-tag --draft --title "FnSVN $TAG" \
+            --notes 'Draft build: validate both packages on their target fnOS devices before publishing.' \
+            fnsvn-amd64.fpk fnsvn-amd64.fpk.sha256 fnsvn-arm64.fpk fnsvn-arm64.fpk.sha256

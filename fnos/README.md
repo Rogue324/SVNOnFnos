@@ -1,6 +1,6 @@
 # 飞牛原生应用封装
 
-FnSVN 使用飞牛原生 FPK 格式，应用中心直接管理 Python Web 服务及其 SVN 子进程，运行身份为专属应用用户 `fnsvn`。只支持 x86-64 飞牛设备；不支持 ARM。Web 管理使用飞牛统一网关 `/app/fnsvn`，通过 `${TRIM_APPDEST}/app.sock` 提供 HTTP，不监听独立 Web TCP 端口。SVN 端口默认3690，由安装向导配置。
+FnSVN 使用飞牛原生 FPK 格式，应用中心直接管理 Python Web 服务及其 SVN 子进程，运行身份为专属应用用户 `fnsvn`。支持构建 x86-64 与实验性 ARM64 安装包；ARM64 尚需实机验证，不支持 32 位 ARM。Web 管理使用飞牛统一网关 `/app/fnsvn`，通过 `${TRIM_APPDEST}/app.sock` 提供 HTTP，不监听独立 Web TCP 端口。SVN 端口默认3690，由安装向导配置。
 
 ## 构建和安装
 
@@ -12,7 +12,7 @@ FnSVN 使用飞牛原生 FPK 格式，应用中心直接管理 Python Web 服务
 powershell -ExecutionPolicy Bypass -File scripts/build-fpk.ps1
 ```
 
-脚本调用 `build-runtime.py` 获取并准备 Debian bookworm amd64 原生 Python、Subversion 和动态库，复制 `server.py`、`static` 到 `fnos/app`，最后调用官方 fnpack 1.2.3 生成 `dist/fnsvn.fpk`。运行库已就绪时可用 `-SkipRuntimeBuild`，用 `-PythonPath` 指定开发机 Python，用 `-FnpackPath` 指定本地官方打包工具。
+脚本调用 `build-runtime.py` 获取并准备目标架构的 Debian bookworm 原生 Python、Subversion 和动态库，复制 `server.py`、`static` 到 `fnos/app`，最后调用官方 fnpack 1.2.3 生成 `dist/fnsvn-amd64.fpk`。传入 `-Architecture arm64` 可生成实验性的 `dist/fnsvn-arm64.fpk`。运行库已就绪时可用 `-SkipRuntimeBuild`（仍会检查架构和依赖），用 `-PythonPath` 指定开发机 Python，用 `-FnpackPath` 指定本地官方打包工具。
 
 通过飞牛应用中心手动安装该 FPK，在向导填写SVN端口和仓库根目录绝对路径，并选择是否启用网页管理登录验证（默认启用）。端口范围1024–65535；目录留空使用应用私有目录，自定义目录须事先授予应用用户读写权限。点击入口会在飞牛内部iframe窗口打开管理页；启用登录验证时需设置独立管理员账号，再创建仓库、用户和授权。SVN客户端使用管理页显示的实际端口连接。
 

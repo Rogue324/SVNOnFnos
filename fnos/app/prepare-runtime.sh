@@ -7,9 +7,11 @@ fail() {
     printf '%s\n' "$1" > "${TRIM_TEMP_LOGFILE:-/dev/stderr}"
     exit 1
 }
-case "$(uname -m)" in
-    x86_64|amd64) ;;
-    *) fail 'This FnSVN package requires an x86-64 fnOS system.' ;;
+[ -r "$APP/runtime/architecture" ] || fail 'Cannot determine bundled runtime architecture.'
+read -r runtime_arch < "$APP/runtime/architecture" || fail 'Cannot read bundled runtime architecture.'
+case "$runtime_arch:$(uname -m)" in
+    amd64:x86_64|amd64:amd64|arm64:aarch64|arm64:arm64) ;;
+    *) fail "This FnSVN package requires a $runtime_arch fnOS system." ;;
 esac
 # Windows packaging may omit Linux executable permission bits.
 # Only package-local files are touched; no system installation is required.

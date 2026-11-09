@@ -2,7 +2,7 @@
 
 为飞牛 fnOS 打造的原生 Subversion 管理应用。FnSVN 以 FPK 应用包安装，自带 Python 与 Subversion 运行库，在应用中心完成启动、停止和运行状态检查，并通过中文 Web 控制台管理仓库、SVN 账户与访问权限。
 
-当前版本：**0.5.0** · 平台：**x86-64 fnOS** · 许可协议：**MIT**
+当前版本：**0.5.0** · 平台：**x86-64 fnOS**（ARM64 构建支持实验中，尚未发布） · 许可协议：**MIT**
 
 ## 功能
 
@@ -16,11 +16,11 @@
 
 ## 环境要求
 
-- x86-64 架构的飞牛 fnOS 设备，国内版最低版本 `1.1.3100`（按官方统一网关 Native 案例声明）；当前版本不支持 ARM。
+- x86-64 或 ARM64（aarch64）架构的飞牛 fnOS 设备，国内版最低版本 `1.1.3100`（按官方统一网关 Native 案例声明）。ARM64 构建为实验性支持，尚需真实设备验证，不支持 32 位 ARM。
 - 配置的 SVN 端口保持空闲，端口范围为 `1024–65535`；Web 管理界面通过飞牛统一网关访问，不占用独立 TCP 端口。
 - 自定义仓库目录需要事先授予 `fnsvn` 应用用户读写权限。
 
-安装包已经包含 Debian 12 amd64 的 Python 3.11、Subversion 及私有动态库，无需在 NAS 上额外安装运行环境，也不会修改系统级软件包。
+安装包包含对应架构的 Debian 12 Python 3.11、Subversion 及私有动态库，无需在 NAS 上额外安装运行环境，也不会修改系统级软件包。
 
 ## 安装
 
@@ -30,7 +30,7 @@
 powershell -ExecutionPolicy Bypass -File scripts/build-fpk.ps1
 ```
 
-产物为 `dist/fnsvn.fpk`。在飞牛应用中心选择手动安装并上传该文件，然后按向导完成配置：
+默认产物为 `dist/fnsvn-amd64.fpk`；ARM64 构建使用 `-Architecture arm64`，产物为 `dist/fnsvn-arm64.fpk`。两者只能用于对应架构，ARM64 尚需实机验证。在飞牛应用中心选择手动安装并上传对应文件，然后按向导完成配置：
 
 1. 设置 SVN 端口，默认 `3690`。
 2. 设置仓库根目录；留空时使用应用私有目录 `data/repos`。
@@ -107,7 +107,7 @@ svnadmin verify /path/to/restored-repo
 
 ## 构建
 
-构建机需要 Python 3.12 与 PowerShell。首次构建会从 Debian 官方 HTTPS 软件源下载 amd64 运行库依赖，按官方索引校验 SHA256，并检查 ELF 架构与动态库依赖闭包；整个过程不会在构建机或 NAS 上执行 deb 安装脚本。
+构建机需要 Python 3.12 与 PowerShell。首次构建会从 Debian 官方 HTTPS 软件源下载目标架构的运行库依赖，按下载的索引校验 SHA256，并检查 ELF 架构与动态库依赖闭包；当前不验证索引签名。整个过程不会在构建机或 NAS 上执行 deb 安装脚本。
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File scripts/build-fpk.ps1
@@ -116,8 +116,11 @@ powershell -ExecutionPolicy Bypass -File scripts/build-fpk.ps1
 常用参数：
 
 ```powershell
-# 运行库已就绪时跳过下载
-powershell -ExecutionPolicy Bypass -File scripts/build-fpk.ps1 -SkipRuntimeBuild
+# 构建 ARM64（实验性，发布前需实机验证）
+powershell -ExecutionPolicy Bypass -File scripts/build-fpk.ps1 -Architecture arm64
+
+# 对应架构运行库已就绪时跳过下载（仍会检查架构和依赖）
+powershell -ExecutionPolicy Bypass -File scripts/build-fpk.ps1 -Architecture arm64 -SkipRuntimeBuild
 
 # 指定 Python、fnpack 或输出目录
 powershell -ExecutionPolicy Bypass -File scripts/build-fpk.ps1 `
@@ -129,11 +132,17 @@ powershell -ExecutionPolicy Bypass -File scripts/build-fpk.ps1 `
 刷新 Debian 运行库依赖：
 
 ```powershell
-py -3.12 scripts/build-runtime.py --refresh
-py -3.12 scripts/check-runtime.py
+py -3.12 scripts/build-runtime.py --arch arm64 --refresh
+py -3.12 scripts/check-runtime.py --arch arm64
 ```
 
 `scripts/build-fpk.ps1` 使用官方 fnpack 1.2.3；本机未安装时会下载到用户工具缓存。构建后在 `fnos/app/runtime/packages.json` 生成原生运行库的软件包清单，各组件的许可证保留在运行库的 `/usr/share/doc` 中。
+
+### GitHub Actions 构建
+
+在 GitHub 的 Actions 页面选择 `Build FnSVN FPK` 并手动运行，可分别构建 amd64 和 ARM64 包，并在运行记录的 Artifacts 中下载 FPK 和对应的 SHA256 文件（保留 30 天）。默认不会发布 Release。工作流需要先提交到仓库默认分支，才能在 Actions 页面手动运行。
+
+如需创建 Release 草稿，先将 `fnos/manifest` 的版本更新并创建匹配的标签（例如版本 `0.6.0` 对应标签 `v0.6.0`），手动运行时选择该标签并勾选 `create_draft_release`。两种架构都构建和校验通过后才会创建草稿；检查和实机验证后由维护者手动发布。该流程不会自动更新 FnDepot 应用源。ARM64 构建和应用尚未在 ARM fnOS 实机验证，不能以 Actions 成功替代实测。
 
 ## 本地开发与测试
 

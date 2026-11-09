@@ -3,6 +3,8 @@ param(
     [string]$FnpackPath,
     [string]$PythonPath,
     [string]$OutputDirectory,
+    [ValidateSet('amd64', 'arm64')]
+    [string]$Architecture = 'amd64',
     [switch]$SkipRuntimeBuild
 )
 $ErrorActionPreference = 'Stop'
@@ -12,22 +14,22 @@ $packageRoot = Join-Path $projectRoot 'fnos'
 $appRoot = Join-Path $packageRoot 'app'
 $fnpackVersion = '1.2.3'
 
-if (-not $SkipRuntimeBuild) {
-    $pythonArguments = @()
-    if (-not $PythonPath) {
-        $launcher = Get-Command py -ErrorAction SilentlyContinue
-        if ($launcher) {
-            $PythonPath = $launcher.Source
-            $pythonArguments = @('-3.12')
-        } else {
-            $PythonPath = 'python'
-        }
+$pythonArguments = @()
+if (-not $PythonPath) {
+    $launcher = Get-Command py -ErrorAction SilentlyContinue
+    if ($launcher) {
+        $PythonPath = $launcher.Source
+        $pythonArguments = @('-3.12')
+    } else {
+        $PythonPath = 'python'
     }
-    & $PythonPath @pythonArguments (Join-Path $PSScriptRoot 'build-runtime.py')
-    if ($LASTEXITCODE -ne 0) { throw 'Native runtime preparation failed.' }
-    & $PythonPath @pythonArguments (Join-Path $PSScriptRoot 'check-runtime.py')
-    if ($LASTEXITCODE -ne 0) { throw 'Native runtime dependency audit failed.' }
 }
+if (-not $SkipRuntimeBuild) {
+    & $PythonPath @pythonArguments (Join-Path $PSScriptRoot 'build-runtime.py') --arch $Architecture
+    if ($LASTEXITCODE -ne 0) { throw 'Native runtime preparation failed.' }
+}
+& $PythonPath @pythonArguments (Join-Path $PSScriptRoot 'check-runtime.py') --arch $Architecture
+if ($LASTEXITCODE -ne 0) { throw 'Native runtime dependency audit failed.' }
 foreach ($command in @('python3', 'svn', 'svnadmin', 'svnlook', 'svnserve')) {
     $binary = Join-Path $appRoot "runtime\bin\$command"
     if (-not (Test-Path -LiteralPath $binary)) { throw "Missing native runtime: $binary" }
@@ -72,16 +74,32 @@ foreach ($path in $packageTextFiles) {
     $content = [System.IO.File]::ReadAllText($path).Replace("`r`n", "`n")
     [System.IO.File]::WriteAllText($path, $content, $utf8)
 }
-$builtPackage = Join-Path $OutputDirectory 'fnsvn.fpk'
-if (Test-Path -LiteralPath $builtPackage) { Remove-Item -LiteralPath $builtPackage -Force }
-Push-Location $OutputDirectory
+# Build separately so one architecture never overwrites the other package.
+$targetName = if ($Architecture -eq 'amd64') { 'fnsvn-amd64.fpk' } else { 'fnsvn-arm64.fpk' }
+$builtPackage = Join-Path $OutputDirectory $targetName
+if (Test-Path -LiteralPath $builtPackage) { throw "Output already exists: $builtPackage" }
+$buildDirectory = Join-Path $OutputDirectory ('.fnsvn-build-' + [guid]::NewGuid().ToString('N'))
+New-Item -ItemType Directory -Path $buildDirectory | Out-Null
+$manifestPath = Join-Path $packageRoot 'manifest'
+$originalManifest = [System.IO.File]::ReadAllText($manifestPath)
+$platform = if ($Architecture -eq 'amd64') { 'x86' } else { 'arm' }
+if ($originalManifest -notmatch '(?m)^platform[ \t]*=[ \t]*x86[ \t]*$') { throw 'Unexpected source manifest platform.' }
 try {
-    & $FnpackPath build --directory $packageRoot
-    if ($LASTEXITCODE -ne 0) { throw "fnpack failed with exit code $LASTEXITCODE" }
+    $packageManifest = [regex]::Replace($originalManifest, '(?m)^platform[ \t]*=[ \t]*x86[ \t]*$', "platform=$platform")
+    [System.IO.File]::WriteAllText($manifestPath, $packageManifest, $utf8)
+    Push-Location $buildDirectory
+    try {
+        & $FnpackPath build --directory $packageRoot
+        if ($LASTEXITCODE -ne 0) { throw "fnpack failed with exit code $LASTEXITCODE" }
+    } finally {
+        Pop-Location
+    }
+    $stagedPackage = Join-Path $buildDirectory 'fnsvn.fpk'
+    if (-not (Test-Path -LiteralPath $stagedPackage)) { throw "fnpack did not produce $stagedPackage" }
+    Copy-Item -LiteralPath $stagedPackage -Destination $builtPackage
 } finally {
-    Pop-Location
+    [System.IO.File]::WriteAllText($manifestPath, $originalManifest, $utf8)
 }
-if (-not (Test-Path -LiteralPath $builtPackage)) { throw "fnpack did not produce $builtPackage" }
 Get-Item -LiteralPath $builtPackage
 Get-FileHash -LiteralPath $builtPackage -Algorithm SHA256
-Write-Host 'Native x86-64 FPK includes Python and SVN. Validate installation and lifecycle on a real fnOS device.'
+Write-Host "Native $Architecture FPK includes Python and SVN. Validate installation and lifecycle on a real fnOS device."

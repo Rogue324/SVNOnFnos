@@ -1,4 +1,4 @@
-"""Bundle a private native Debian 12 amd64 Python/Subversion runtime.
+"""Bundle a private Debian 12 Python/Subversion runtime for amd64 or arm64.
 
 Downloads only Debian main packages, validates their SHA256 against the official
 HTTPS package index, follows Depends/Pre-Depends (not Recommends), and never runs
@@ -21,9 +21,12 @@ import urllib.request
 
 ROOT = Path(__file__).resolve().parents[1]
 MIRROR = "https://deb.debian.org/debian/"
-INDEX = MIRROR + "dists/bookworm/main/binary-amd64/Packages.gz"
 SECURITY_MIRROR = "https://security.debian.org/debian-security/"
-SECURITY_INDEX = SECURITY_MIRROR + "dists/bookworm-security/main/binary-amd64/Packages.xz"
+ARCHITECTURES = {
+    "amd64": ("x86_64-linux-gnu", "ld-linux-x86-64.so.2"),
+    "arm64": ("aarch64-linux-gnu", "ld-linux-aarch64.so.1"),
+}
+ALIASES = {"x86_64": "amd64", "aarch64": "arm64"}
 
 
 def version_compare(a, b):
@@ -156,22 +159,33 @@ def extract_deb(path, target, links):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--refresh", action="store_true")
+    parser.add_argument("--arch", choices=(*ARCHITECTURES, *ALIASES), default="amd64",
+                        help="target architecture (default: amd64)")
     args = parser.parse_args()
-    cache = ROOT / ".tools" / "debian"
+    arch = ALIASES.get(args.arch, args.arch)
+    triplet, loader = ARCHITECTURES[arch]
+    index = MIRROR + f"dists/bookworm/main/binary-{arch}/Packages.gz"
+    security_index = SECURITY_MIRROR + f"dists/bookworm-security/main/binary-{arch}/Packages.xz"
+    cache = ROOT / ".tools" / "debian" / arch
     runtime = ROOT / "fnos" / "app" / "runtime"
     marker = runtime / "packages.json"
+    architecture_file = runtime / "architecture"
     if marker.is_file() and not args.refresh:
-        print(f"Native runtime already prepared: {runtime}")
-        return
+        existing = json.loads(marker.read_text(encoding="utf-8"))
+        if existing.get("architecture") == arch:
+            architecture_file.write_text(arch + "\n", encoding="utf-8")
+            print(f"Native runtime already prepared: {runtime} ({arch})")
+            return
+        print(f"Replacing {existing.get('architecture', 'unknown')} runtime with {arch}")
     index_path = cache / "Packages.gz"
     if not index_path.is_file() or args.refresh:
-        fetch(INDEX, index_path)
+        fetch(index, index_path)
     package_index = parse_index(gzip.decompress(index_path.read_bytes()).decode())
     for entry in package_index.values():
         entry["Mirror"] = MIRROR
     security_path = cache / "Security-Packages.xz"
     if not security_path.is_file() or args.refresh:
-        fetch(SECURITY_INDEX, security_path)
+        fetch(security_index, security_path)
     for key, entry in parse_index(lzma.decompress(security_path.read_bytes()).decode()).items():
         if key not in package_index or version_compare(entry["Version"], package_index[key]["Version"]) > 0:
             entry["Mirror"] = SECURITY_MIRROR
@@ -190,6 +204,10 @@ def main():
     with ThreadPoolExecutor(max_workers=6) as pool:
         paths = list(pool.map(download, packages.values()))
     target = runtime / "root"
+    # Invalidate the previous manifest before replacing its files, so an
+    # interrupted rebuild cannot be mistaken for a complete runtime.
+    marker.unlink(missing_ok=True)
+    architecture_file.unlink(missing_ok=True)
     if target.exists():
         # Rebuild only the generated runtime root, checked inside this workspace.
         if target.resolve() != (ROOT / "fnos" / "app" / "runtime" / "root").resolve():
@@ -231,21 +249,22 @@ def main():
     # Optional desktop keyring providers are dynamically loaded by SVN, are not
     # dependencies of the CLI, and must not pull in NAS host Qt/GNOME libraries.
     for pattern in ("libsvn_auth_gnome_keyring*", "libsvn_auth_kwallet*"):
-        for optional in (target / "usr/lib/x86_64-linux-gnu").glob(pattern):
+        for optional in (target / "usr/lib" / triplet).glob(pattern):
             optional.unlink()
     bindir = runtime / "bin"
     bindir.mkdir(exist_ok=True)
     for tool in ("python3", "svn", "svnadmin", "svnlook", "svnserve"):
         executable = "python3.11" if tool == "python3" else tool
         text = '#!/bin/sh\nset -eu\nbase=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)\n'
-        text += 'export LC_ALL=C.UTF-8\nexport GCONV_PATH="$base/root/usr/lib/x86_64-linux-gnu/gconv"\n'
+        text += f'export LC_ALL=C.UTF-8\nexport GCONV_PATH="$base/root/usr/lib/{triplet}/gconv"\n'
         if tool == "python3":
             text += 'export PYTHONHOME="$base/root/usr"\nexport PYTHONDONTWRITEBYTECODE=1\n'
-        text += f'exec "$base/root/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2" --library-path "$base/root/lib/x86_64-linux-gnu:$base/root/usr/lib/x86_64-linux-gnu:$base/root/usr/lib/x86_64-linux-gnu/gconv" "$base/root/usr/bin/{executable}" "$@"\n'
+        text += f'exec "$base/root/lib/{triplet}/{loader}" --library-path "$base/root/lib/{triplet}:$base/root/usr/lib/{triplet}:$base/root/usr/lib/{triplet}/gconv" "$base/root/usr/bin/{executable}" "$@"\n'
         (bindir / tool).write_text(text, encoding="utf-8", newline="\n")
         os.chmod(bindir / tool, 0o755)
-    manifest = {"architecture": "amd64", "distribution": "Debian 12 bookworm", "indexes": [INDEX, SECURITY_INDEX],
+    manifest = {"architecture": arch, "distribution": "Debian 12 bookworm", "indexes": [index, security_index],
                 "packages": [{k: entry[k] for k in ("Package", "Version", "Mirror", "Filename", "SHA256")} for entry in packages.values()]}
+    architecture_file.write_text(arch + "\n", encoding="utf-8")
     marker.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
     print(f"Prepared native runtime: {len(packages)} packages, {sum(p.stat().st_size for p in target.rglob('*') if p.is_file()) / 1024**2:.1f} MiB")
 

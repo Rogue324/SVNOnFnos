@@ -1,6 +1,9 @@
 name: Build FnSVN FPK
 
 on:
+  push:
+    tags:
+      - 'v*'
   workflow_dispatch:
     inputs:
       create_draft_release:
@@ -27,7 +30,7 @@ jobs:
         with:
           python-version: '3.12'
       - name: Verify selected tag matches manifest for draft release
-        if: ${{ inputs.create_draft_release }}
+        if: ${{ github.event_name == 'push' || inputs.create_draft_release }}
         shell: pwsh
         env:
           REF_TYPE: ${{ github.ref_type }}
@@ -58,7 +61,7 @@ jobs:
           retention-days: 30
 
   draft-release:
-    if: ${{ inputs.create_draft_release }}
+    if: ${{ github.event_name == 'push' || inputs.create_draft_release }}
     needs: build
     runs-on: ubuntu-latest
     permissions:

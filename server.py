@@ -167,9 +167,15 @@ def repository_directory(data, value):
     if path == Path(path.anchor) or path == data or path in data.parents or any(path.is_relative_to(p) or p.is_relative_to(path) for p in protected):
         raise Error("请使用独立的 SVN 仓库目录，不能使用文件系统根目录、应用配置或备份目录")
     path.mkdir(parents=True, exist_ok=True, mode=0o700)
+    # Listing checks read permission on the directory itself, not just write
+    # permission in a private child. Real operations honor ACLs and mount flags.
+    with os.scandir(path) as entries:
+        next(entries, None)
     with tempfile.TemporaryDirectory(prefix=".fnsvn-access-", dir=path) as probe:
         source = Path(probe) / "write-test"
         source.write_bytes(b"FnSVN access check")
+        if source.read_bytes() != b"FnSVN access check":
+            raise OSError("目录读写校验失败")
         source.rename(Path(probe) / "renamed")
     return path
 
@@ -702,14 +708,18 @@ def save_settings(server, body):
     try:
         old_text = settings_path.read_text("utf-8") if settings_path.exists() else None
         with store.lock, store.backup_lock:
-            candidate = Path(raw).resolve()
-            changing = candidate != previous
-            if changing and (candidate.is_relative_to(previous) or previous.is_relative_to(candidate)):
-                raise Error("新旧仓库目录不能相互包含，请选择独立目录")
             try:
+                candidate = Path(raw).resolve()
+                changing = candidate != previous
+                if changing and (candidate.is_relative_to(previous) or previous.is_relative_to(candidate)):
+                    raise Error("新旧仓库目录不能相互包含，请选择独立目录")
                 destination = repository_directory(store.root, raw)
             except OSError as exc:
-                raise Error("目录不可读写，请在飞牛中授予 FnSVN 应用用户读写权限", 403) from exc
+                if exc.errno in (errno.EACCES, errno.EPERM, errno.EROFS):
+                    raise Error("仓库目录不可读写，请在飞牛中授予 FnSVN 应用用户对目标目录及其父目录的读写和访问权限；新目录还需要在父目录中创建目录的权限", 403) from exc
+                if exc.errno in (errno.ENOTDIR, errno.EEXIST):
+                    raise Error("仓库存放路径不是目录，请选择有效目录") from exc
+                raise
             keys = list(store.state["repositories"])
             if changing and any((destination / key).exists() for key in keys):
                 raise Error("目标目录已有同名仓库。为避免覆盖，请选择没有同名仓库的专用目录", 409)

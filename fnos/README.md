@@ -14,9 +14,9 @@ powershell -ExecutionPolicy Bypass -File scripts/build-fpk.ps1
 
 脚本调用 `build-runtime.py` 获取并准备目标架构的 Debian bookworm 原生 Python、Subversion 和动态库，复制 `server.py`、`static` 到 `fnos/app`，最后调用官方 fnpack 1.2.3 生成 `dist/fnsvn-amd64.fpk`。传入 `-Architecture arm64` 可生成实验性的 `dist/fnsvn-arm64.fpk`。运行库已就绪时可用 `-SkipRuntimeBuild`（仍会检查架构和依赖），用 `-PythonPath` 指定开发机 Python，用 `-FnpackPath` 指定本地官方打包工具。
 
-通过飞牛应用中心手动安装该 FPK，在向导填写SVN端口和仓库根目录绝对路径，并选择是否启用网页管理登录验证（默认启用）。端口范围1024–65535；目录留空使用应用私有目录，自定义目录须事先授予应用用户读写权限。点击入口会在飞牛内部iframe窗口打开管理页；启用登录验证时需设置独立管理员账号，再创建仓库、用户和授权。SVN客户端使用管理页显示的实际端口连接。
+通过飞牛应用中心手动安装该 FPK，在向导填写 SVN 端口，并选择是否启用网页管理登录验证（默认启用）。端口范围 1024–65535；仓库默认位于应用私有目录，安装后可在网页「系统设置」修改目录，自定义目录须事先授予应用用户读写权限。点击入口会在飞牛内部 iframe 窗口打开管理页；启用登录验证时需设置独立管理员账号，再创建仓库、用户和授权。SVN 客户端使用管理页显示的实际端口连接。
 
-配置保存到 `${TRIM_PKGVAR}/service-settings.json`，包含 `svn_port`、`repos_path`、`svn_host`、`web_auth_required`，由包内helper及后端读取；不作为Shell代码执行。安装、配置、升级向导均提供端口、目录及网页登录验证字段；配置及升级留空保留已有端口和目录，登录验证默认选择「保留当前设置」。旧配置缺少 `web_auth_required` 时按启用处理，Web设置的连接IP/域名也会保留。修改端口后在应用中心重新启动。后端不自动换端口，避免客户端地址悄然改变。
+配置保存到 `${TRIM_PKGVAR}/service-settings.json`，包含 `svn_port`、`repos_path`、`svn_host`、`web_auth_required`，由包内helper及后端读取；不作为Shell代码执行。安装向导提供端口及网页登录验证字段；配置和升级向导还提供目录字段，留空保留已有端口和目录，登录验证默认选择「保留当前设置」。旧配置缺少 `web_auth_required` 时按启用处理，Web设置的连接IP/域名也会保留。修改端口后在应用中心重新启动。后端不自动换端口，避免客户端地址悄然改变。
 
 安装后也可在网页「系统设置」启用或关闭网页管理登录验证。关闭后，任何通过飞牛 NAS 会话校验且能访问 FnSVN 入口的人均可直接管理仓库、账号及系统设置。此开关只关闭应用自身的管理员登录，网关仍校验飞牛会话；NAS 登录不会自动授予应用业务权限。SVN 客户端仍按仓库账号及权限认证。
 

@@ -13,6 +13,15 @@ spec.loader.exec_module(settings)
 
 
 class WizardSettings(unittest.TestCase):
+    def test_install_hides_repository_path_but_upgrade_preserves_it(self):
+        wizard_dir = Path(__file__).resolve().parents[1] / "fnos" / "wizard"
+        def fields(name):
+            pages = json.loads((wizard_dir / name).read_text(encoding="utf-8"))
+            return {item.get("field") for page in pages for item in page["items"]}
+        self.assertNotIn("wizard_repos_path", fields("install"))
+        self.assertIn("wizard_repos_path", fields("upgrade"))
+        self.assertIn("wizard_repos_path", fields("config"))
+
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory(prefix="fnsvn-settings-")
         self.var = Path(self.tmp.name)

@@ -92,6 +92,26 @@ class Integration(unittest.TestCase):
         self.api("/api/setup", {"username": "admin", "password": "secure-admin-password"}, "POST", expected=403, header=False)
         self.api("/api/setup", {"username": "admin", "password": "secure-admin-password"}, "POST")
         self.api("/api/setup", {"username": "other", "password": "secure-admin-password"}, "POST", expected=409)
+        self.api("/api/repositories/absent/access-preview?user=nobody", expected=404)
+        self.api("/api/repositories/absent/access-rules", {"groups": {}, "paths": {}}, "PUT", expected=404)
+        self.api("/api/repositories", {"name": "accesscheck"}, "POST", expected=201)
+        self.api("/api/users", {"username": "accessuser", "password": "secret"}, "POST")
+        self.api("/api/repositories/accesscheck/access-rules", {"groups": {"team": ["accessuser"]}, "paths": {"/dir": {"accessuser": "", "@team": "rw"}}}, "PUT")
+        self.api("/api/repositories/accesscheck/permissions", {"permissions": {"@team": "rw"}}, "PUT")
+        url = f"svn://127.0.0.1:{self.svn_port}/accesscheck"
+        credentials = ["--username", "accessuser", "--password", "secret"]
+        self.svn("mkdir", url + "/dir", "-m", "create", *credentials)
+        preview = self.api("/api/repositories/accesscheck/access-preview?user=accessuser&path=/dir")
+        self.assertEqual("rw", preview["permission"])
+        self.svn("mkdir", url + "/dir/child", "-m", "group union", *credentials)
+        preview = self.api("/api/repositories/accesscheck/access-preview?user=accessuser&path=/dir/child")
+        self.assertEqual("rw", preview["permission"])
+        self.api("/api/repositories/accesscheck/access-rules", {"groups": {"team": ["accessuser"]}, "paths": {"/dir": {"@team": "r"}}}, "PUT")
+        self.assertEqual("r", self.api("/api/repositories/accesscheck/access-preview?user=accessuser&path=/dir/child")["permission"])
+        self.svn("mkdir", url + "/dir/denied", "-m", "denied", *credentials, success=False)
+        self.api("/api/repositories/accesscheck", {"confirmName": "accesscheck"}, "DELETE")
+        self.api("/api/users/accessuser", method="DELETE")
+
         self.api("/api/repositories", {"name": "../escape"}, "POST", expected=400)
         self.api("/api/repositories", {"name": "game"}, "POST", expected=201)
         self.api("/api/repositories", {"name": "game"}, "POST", expected=409)
@@ -113,6 +133,18 @@ class Integration(unittest.TestCase):
         self.assertEqual(1, detail["revision"])
         self.assertEqual("hello.txt", detail["entries"][0]["name"])
         self.assertEqual("Initial commit", detail["log"][0]["message"])
+        history = self.api("/api/repositories/game/history?limit=1&author=alice")
+        self.assertEqual([1], [entry["revision"] for entry in history["entries"]])
+        self.assertEqual([], self.api("/api/repositories/game/history?author=absent")["entries"])
+        files = self.api("/api/repositories/game/history/1")["files"]
+        self.assertIn("/hello.txt", [entry["path"] for entry in files])
+        diff = self.api("/api/repositories/game/compare?path=hello.txt&old=0&new=1")["diff"]
+        self.assertIn("hello SVN", diff)
+        hook = self.repos / "game" / "hooks" / "pre-commit"
+        hook.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        self.api("/api/repositories/game/commit-rules", {"minMessageLength": 4, "notificationUrl": ""}, "PUT")
+        self.assertEqual(4, self.api("/api/repositories/game/commit-rules")["minMessageLength"])
+        self.assertEqual("#!/bin/sh\nexit 0\n", hook.with_name("pre-commit.fnsvn-original").read_text(encoding="utf-8"))
         self.api("/api/repositories/game?path=../config", expected=400)
         self.api("/api/repositories/game/permissions", {"permissions": {"ghost": "rw"}}, "PUT", expected=400)
         filename = self.api("/api/repositories/game/backup", {}, "POST", expected=201)["filename"]

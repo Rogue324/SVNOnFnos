@@ -214,14 +214,45 @@ function formatDate(date) {
 }
 
 function renderLog() {
-  const logs = state.detail.log || [];
-  $('#detail-content').innerHTML = `<div class="data-panel table-scroll"><table><thead><tr><th>版本</th><th>提交人</th><th>时间</th><th class="align-left">提交说明</th></tr></thead><tbody>${logs.length ? logs.map(log => `<tr><td><span class="tag">r${esc(log.revision)}</span></td><td>${esc(log.author || '—')}</td><td class="no-wrap">${esc(formatDate(log.date))}</td><td class="log-message">${esc(log.message || '未填写提交说明')}</td></tr>`).join('') : '<tr><td colspan="4" class="table-empty">还没有提交记录。</td></tr>'}</tbody></table></div>`;
+  const panel = $('#detail-content');
+  panel.innerHTML = `<form id="history-filter" class="data-panel"><label>作者 <input name="author"></label> <label>开始日期 <input name="from" type="date"></label> <label>结束日期 <input name="to" type="date"></label> <button class="button small">搜索</button></form><div id="history-results"></div><div id="history-detail"></div>`;
+  const form = $('#history-filter', panel), results = $('#history-results', panel), detail = $('#history-detail', panel);
+  let pages = [], page = 0, request = 0;
+  async function load(before = null) {
+    const current = ++request; results.textContent = '正在读取提交历史…';
+    const params = new URLSearchParams(new FormData(form)); if (before !== null) params.set('before', before);
+    try {
+      const data = await api(`${repoApi(state.detail.name)}/history?${params}`);
+      if (current !== request || !panel.isConnected) return;
+      pages[page] = {before, next: data.nextBefore};
+      results.innerHTML = `<div class="data-panel table-scroll"><table><thead><tr><th>版本</th><th>提交人</th><th>时间</th><th>提交说明</th></tr></thead><tbody>${data.entries.map(log => `<tr><td><button class="text-button" data-history-revision="${log.revision}">r${log.revision}</button></td><td>${esc(log.author || '—')}</td><td>${esc(formatDate(log.date))}</td><td>${esc(log.message || '未填写提交说明')}</td></tr>`).join('') || '<tr><td colspan="4">没有匹配的提交。</td></tr>'}</tbody></table><button class="button small" data-history-prev ${page === 0 ? 'disabled' : ''}>上一页</button> 第 ${page + 1} 页 <button class="button small" data-history-next ${data.nextBefore === null ? 'disabled' : ''}>下一页</button></div>`;
+      $('[data-history-prev]', results).onclick = () => { page--; load(pages[page].before); };
+      $('[data-history-next]', results).onclick = () => { page++; load(data.nextBefore); };
+      results.querySelectorAll('[data-history-revision]').forEach(button => button.onclick = async () => {
+        const revision = Number(button.dataset.historyRevision); detail.textContent = '正在读取提交文件…';
+        try {
+          const files = await api(`${repoApi(state.detail.name)}/history/${revision}`); if (!panel.isConnected) return;
+          detail.innerHTML = `<section class="data-panel"><h3>r${revision} 的变更文件</h3>${files.files.map(file => `<div>${esc(file.action)} ${esc(file.path)} ${file.kind !== 'dir' ? `<button class="text-button" data-compare-path="${esc(file.path)}">比较文本</button>` : ''}</div>`).join('') || '没有文件变更'}<p>比较版本：<input id="history-old" type="number" min="0" value="${revision - 1}" aria-label="原版本"> 至 <input id="history-new" type="number" min="0" value="${revision}" aria-label="新版本"></p><pre id="history-diff" style="white-space:pre-wrap;overflow-wrap:anywhere"></pre></section>`;
+          detail.querySelectorAll('[data-compare-path]').forEach(compare => compare.onclick = async () => {
+            const output = $('#history-diff', detail); output.textContent = '正在比较…';
+            try { const q = new URLSearchParams({path: compare.dataset.comparePath, old: $('#history-old', detail).value, new: $('#history-new', detail).value}); const result = await api(`${repoApi(state.detail.name)}/compare?${q}`); output.textContent = result.diff || '没有文本差异'; } catch (error) { output.textContent = error.message; }
+          });
+        } catch (error) { detail.textContent = error.message; }
+      });
+    } catch (error) { if (current === request && panel.isConnected) results.textContent = error.message; }
+  }
+  form.onsubmit = event => { event.preventDefault(); pages = []; page = 0; detail.innerHTML = ''; load(); }; load();
 }
 
 function renderPermissions() {
   const users = state.overview.users;
   const permissions = state.detail.permissions || {};
   $('#detail-content').innerHTML = `<div class="notice">设置仓库根目录权限，适用于该仓库的所有文件与目录。未授权账户无法访问；匿名访问已禁用。</div>${users.length ? `<form id="permissions-form" class="data-panel"><div class="table-scroll"><table><thead><tr><th>SVN 账户</th><th>仓库权限</th></tr></thead><tbody>${users.map(user => `<tr><td><strong>${esc(user.name)}</strong></td><td><select aria-label="${esc(user.name)} 的权限" data-permission-user="${esc(user.name)}"><option value=""${!permissions[user.name] ? ' selected' : ''}>无权限</option><option value="r"${permissions[user.name] === 'r' ? ' selected' : ''}>只读 · 检出与更新</option><option value="rw"${permissions[user.name] === 'rw' ? ' selected' : ''}>读写 · 允许提交</option></select></td></tr>`).join('')}</tbody></table></div><div class="permissions-footer"><button class="button primary" type="submit">保存权限设置</button></div></form>` : emptyState('♙', '先创建 SVN 账户', '添加账户后，即可为此仓库设置访问权限。', '<button class="button" data-action="goto-users">管理 SVN 账户 →</button>')}`;
+  $('#detail-content').insertAdjacentHTML('beforeend', `<form id="advanced-access" class="data-panel" style="padding:20px;margin-top:20px"><h3>用户组与子目录授权</h3><p class="field-help">使用 JSON 配置用户组和子目录。路径以 / 开头，对象可用 @组名，权限为 r、rw 或空字符串。</p><label>用户组<textarea name="groups" rows="5" style="display:block;width:100%">${esc(JSON.stringify(state.detail.groups || {}, null, 2))}</textarea></label><label>子目录授权<textarea name="paths" rows="8" style="display:block;width:100%">${esc(JSON.stringify(state.detail.pathPermissions || {}, null, 2))}</textarea></label><button class="button primary" type="submit">保存用户组与子目录授权</button></form><form id="access-preview" class="data-panel" style="padding:20px;margin-top:20px"><h3>已保存权限预览</h3><label>账户<select name="user">${users.map(u => `<option value="${esc(u.name)}">${esc(u.name)}</option>`).join('')}</select></label><label>路径<input name="path" value="/" required></label><button class="button" type="submit">查询</button><p id="access-result" role="status"></p></form>`);
+  $('#advanced-access').addEventListener('submit', async event => { event.preventDefault(); try { const groups = JSON.parse(event.target.elements.groups.value), paths = JSON.parse(event.target.elements.paths.value); await api(`${repoApi(state.detail.name)}/access-rules`, { method: 'PUT', body: {groups, paths} }); state.detail.groups = groups; state.detail.pathPermissions = paths; renderPermissions(); toast('用户组与子目录授权已保存'); } catch (error) { toast(error.message, true); } });
+  $('#access-preview').addEventListener('submit', async event => { event.preventDefault(); try { const q = new URLSearchParams({user: event.target.elements.user.value, path: event.target.elements.path.value}); const r = await api(`${repoApi(state.detail.name)}/access-preview?${q}`); $('#access-result').textContent = `权限：${r.permission || '无权限'}；来源：${r.source}`; } catch (error) { $('#access-result').textContent = error.message; } });
+  const footer = $('#permissions-form .permissions-footer');
+  if (footer && Object.keys(state.detail.groups || {}).length) footer.insertAdjacentHTML('beforebegin', `<div style="padding:20px"><h3>根目录用户组授权</h3>${Object.keys(state.detail.groups).map(group => `<label>@${esc(group)} <select data-permission-user="@${esc(group)}"><option value="">无权限</option><option value="r"${permissions['@' + group] === 'r' ? ' selected' : ''}>只读</option><option value="rw"${permissions['@' + group] === 'rw' ? ' selected' : ''}>读写</option></select></label>`).join('')}</div>`);
   const form = $('#permissions-form');
   if (form) form.addEventListener('submit', async event => {
     event.preventDefault();

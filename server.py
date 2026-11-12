@@ -1,5 +1,7 @@
 """FnSVN: small, dependency-free administration server for svnserve."""
 import argparse
+import commit_rules
+import history
 from collections import deque
 import ctypes
 import errno
@@ -293,6 +295,9 @@ class Store:
             if created:
                 probe.unlink(missing_ok=True)
         self.sync()
+        for key in self.state["repositories"]:
+            if (self.repo(key) / "hooks" / "fnsvn-rules.json").is_file():
+                commit_rules.save(self.repo(key), commit_rules.load(self.repo(key)))
 
     def recover_rename(self):
         journal = self.root / "config" / "rename-journal.json"
@@ -316,6 +321,9 @@ class Store:
                 promote_repository(target, source)
         else:
             raise RuntimeError("Unfinished repository rename has ambiguous directories; no data was overwritten")
+        paths = self.state.setdefault("path_permissions", {})
+        if new in paths and old not in paths and old in repositories:
+            paths[old] = paths.pop(new)
         # Persist recovered permissions before retiring the recovery record.
         self.sync()
         journal.unlink()
@@ -325,10 +333,12 @@ class Store:
         # svnserve's built-in CRAM-MD5 authentication requires a cleartext password file.
         config = self.root / "config"
         atomic(config / "passwd", "[users]\n" + "".join(f"{u} = {p}\n" for u, p in self.state["users"].items()))
-        authz = ""
+        authz = "[groups]\n" + "".join(f"{g} = {chr(44).join(m)}\n" for g, m in self.state.get("groups", {}).items()) + "\n"
         for repo, perms in self.state["repositories"].items():
             authz += f"[{repo}:/]\n* =\n"
             authz += "".join(f"{u} = {v}\n" for u, v in perms.items()) + "\n"
+            for path, rules in self.state.get("path_permissions", {}).get(repo, {}).items():
+                authz += f"[{repo}:{path}]\n" + "".join(f"{u} = {v}\n" for u, v in rules.items()) + "\n"
         atomic(config / "authz", authz)
         atomic(self.statefile, json.dumps(self.state, ensure_ascii=False, indent=2))
 
@@ -432,7 +442,7 @@ class Store:
         result.update(entries=[{"name": e.findtext("name"), "kind": e.get("kind")} for e in listing.findall(".//entry")],
                       log=[{"revision": int(e.get("revision")), "author": e.findtext("author", ""),
                             "date": e.findtext("date", ""), "message": e.findtext("msg", "")} for e in logs.findall("logentry")],
-                      permissions=self.state["repositories"][key])
+                      permissions=self.state["repositories"][key], groups=self.state.get("groups", {}), pathPermissions=self.state.get("path_permissions", {}).get(key, {}))
         return result
 
     def backup(self, key):
@@ -559,6 +569,7 @@ def delete_repository(server, key, confirmation):
         raise Error("已有仓库任务进行中，请稍后重试", 409)
     moved, removed, archive = False, False, None
     original_permissions = None
+    original_paths = None
     store.lock.acquire()
     try:
         with store.lock, store.backup_lock:
@@ -568,12 +579,13 @@ def delete_repository(server, key, confirmation):
             if not source.is_dir() or not (source / "format").is_file():
                 raise Error("仓库文件不存在或格式不完整", 409)
             original_permissions = dict(store.state["repositories"][key])
+            original_paths = store.state.get("path_permissions", {}).get(key)
             pause_svn(server)
             parent = store.root / "deleted" / (datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ") + "-" + secrets.token_hex(6))
             parent.mkdir(parents=True, mode=0o700)
             archive = parent / key
             atomic(parent / "metadata.json", json.dumps({"name": key, "originalPath": str(source),
-                                                         "permissions": original_permissions}, ensure_ascii=False, indent=2))
+                                                         "permissions": original_permissions, "pathPermissions": original_paths}, ensure_ascii=False, indent=2))
             try:
                 promote_repository(source, archive)
                 moved = True
@@ -586,6 +598,7 @@ def delete_repository(server, key, confirmation):
                 if revision != int(run("svnlook", "youngest", str(source)).strip()):
                     raise Error("回收副本版本校验失败，原仓库未删除", 500)
             del store.state["repositories"][key]
+            store.state.get("path_permissions", {}).pop(key, None)
             removed = True
             store.sync()
             warning = ""
@@ -605,6 +618,7 @@ def delete_repository(server, key, confirmation):
             promote_repository(archive, store.repos / key)
         if removed and original_permissions is not None:
             store.state["repositories"][key] = original_permissions
+            if original_paths is not None: store.state.setdefault("path_permissions", {})[key] = original_paths
             store.sync()
         raise
     finally:
@@ -648,6 +662,8 @@ def rename_repository(server, key, new_name):
             moved = True
             del store.state["repositories"][key]
             store.state["repositories"][new_name] = permissions
+            paths = store.state.setdefault("path_permissions", {})
+            if key in paths: paths[new_name] = paths.pop(key)
             registered = True
             store.sync()
             result = store.summary(new_name)
@@ -662,6 +678,8 @@ def rename_repository(server, key, new_name):
         if registered:
             store.state["repositories"].pop(new_name, None)
             store.state["repositories"][key] = permissions
+            paths = store.state.setdefault("path_permissions", {})
+            if new_name in paths: paths[key] = paths.pop(new_name)
             store.sync()
         if journal_created:
             journal.unlink(missing_ok=True)
@@ -915,7 +933,8 @@ class Handler(BaseHTTPRequestHandler):
             files = {"/": ("index.html", "text/html; charset=utf-8"),
                      "/index.html": ("index.html", "text/html; charset=utf-8"),
                      "/style.css": ("style.css", "text/css; charset=utf-8"),
-                     "/app.js": ("app.js", "text/javascript; charset=utf-8")}
+                     "/app.js": ("app.js", "text/javascript; charset=utf-8"),
+                     "/commit-rules.js": ("commit-rules.js", "text/javascript; charset=utf-8")}
             if parsed.path not in files:
                 raise Error("页面不存在", 404)
             filename, mime = files[parsed.path]
@@ -967,6 +986,10 @@ class Handler(BaseHTTPRequestHandler):
                 if username not in self.store.state["users"]:
                     raise Error("用户不存在", 404)
                 del self.store.state["users"][username]
+                for members in self.store.state.get("groups", {}).values():
+                    if username in members: members.remove(username)
+                for paths in self.store.state.get("path_permissions", {}).values():
+                    for rules in paths.values(): rules.pop(username, None)
                 for perms in self.store.state["repositories"].values():
                     perms.pop(username, None)
                 self.store.sync()
@@ -978,16 +1001,67 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send(200, delete_repository(self.server, key, self.body().get("confirmName")))
             if len(parts) == 3 and method == "GET":
                 return self.send(200, self.store.browse(key, parse_qs(parsed.query).get("path", [""])[0]))
+            if len(parts) == 4 and parts[3] == "history" and method == "GET":
+                return self.send(200, history.history(self.store, key, parse_qs(parsed.query), run, Error))
+            if len(parts) == 5 and parts[3] == "history" and method == "GET":
+                return self.send(200, history.revision_files(self.store, key, parts[4], run, Error))
+            if len(parts) == 4 and parts[3] == "compare" and method == "GET":
+                return self.send(200, history.compare(self.store, key, parse_qs(parsed.query), run, Error))
             if len(parts) == 4 and parts[3] == "rename" and method == "POST":
                 return self.send(200, rename_repository(self.server, key, self.body().get("name")))
+            if len(parts) == 4 and parts[3] == "access-preview" and method == "GET":
+                q = parse_qs(parsed.query)
+                username, path = q.get("user", [""])[0], q.get("path", ["/"])[0]
+                if username not in self.store.state["users"] or not path.startswith("/") or any(x in (".", "..") for x in path.split("/")): raise Error("无效的用户或路径")
+                with self.store.lock:
+                    sections = {"/": {"*": "", **self.store.state["repositories"][key]}, **self.store.state.get("path_permissions", {}).get(key, {})}
+                    groups = self.store.state.get("groups", {})
+                    path = path.rstrip("/") or "/"
+                    while True:
+                        rules = sections.get(path, {})
+                        matched = [rules["@" + g] for g, members in groups.items() if username in members and "@" + g in rules]
+                        if username in rules: matched.append(rules[username])
+                        if "*" in rules: matched.append(rules["*"])
+                        if matched: return self.send(200, {"permission": max(matched, key=len), "source": path})
+                        if path == "/": return self.send(200, {"permission": "", "source": path})
+                        path = path.rsplit("/", 1)[0] or "/"
+            if len(parts) == 4 and parts[3] == "access-rules" and method == "PUT":
+                body = self.body()
+                groups, paths = body.get("groups"), body.get("paths")
+                with self.store.lock:
+                    users = self.store.state["users"]
+                    if not isinstance(groups, dict) or not isinstance(paths, dict): raise Error("无效的权限配置")
+                    for group, members in groups.items():
+                        name(group)
+                        if not isinstance(members, list) or any(not isinstance(u, str) or u not in users for u in members) or len(set(members)) != len(members): raise Error("用户组成员无效")
+                    for path, rules in paths.items():
+                        if not isinstance(path, str) or not path.startswith("/") or path == "/" or path.endswith("/") or any(c in path for c in "[]\\\n\r") or any(x in ("", ".", "..") for x in path[1:].split("/")): raise Error("子目录路径无效")
+                        if not isinstance(rules, dict) or any((u not in users and not (u.startswith("@") and u[1:] in groups)) or v not in ("", "r", "rw") for u, v in rules.items()): raise Error("授权对象或权限无效")
+                    for repo, existing in self.store.state.get("path_permissions", {}).items():
+                        if repo != key and any(u.startswith("@") and u[1:] not in groups for rules in existing.values() for u in rules): raise Error("其他仓库仍使用被删除的用户组")
+                    if any(u.startswith("@") and u[1:] not in groups for rules in self.store.state["repositories"].values() for u in rules): raise Error("仓库根目录仍使用被删除的用户组")
+                    self.store.state["groups"] = groups
+                    self.store.state.setdefault("path_permissions", {})[key] = paths
+                    self.store.sync()
+                return self.send(200, {"ok": True})
             if len(parts) == 4 and parts[3] == "permissions" and method == "PUT":
                 perms = self.body().get("permissions")
                 with self.store.lock:
-                    if not isinstance(perms, dict) or any(u not in self.store.state["users"] or p not in ("", "r", "rw") for u, p in perms.items()):
+                    if not isinstance(perms, dict) or any((u not in self.store.state["users"] and not (u.startswith("@") and u[1:] in self.store.state.get("groups", {}))) or p not in ("", "r", "rw") for u, p in perms.items()):
                         raise Error("无效的用户或权限")
                     self.store.state["repositories"][key] = perms
                     self.store.sync()
                 return self.send(200, {"ok": True})
+            if len(parts) == 4 and parts[3] == "commit-rules":
+                with self.store.lock:
+                    if method == "GET":
+                        return self.send(200, commit_rules.load(self.store.repo(key)))
+                    if method == "PUT":
+                        try:
+                            result = commit_rules.save(self.store.repo(key), self.body())
+                        except ValueError as exc:
+                            raise Error(str(exc)) from exc
+                        return self.send(200, result)
             if len(parts) == 4 and parts[3] == "backup" and method == "POST":
                 return self.send(201, self.store.backup(key))
         if parts == ["api", "backups"] and method == "GET":

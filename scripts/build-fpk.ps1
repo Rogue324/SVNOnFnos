@@ -35,6 +35,11 @@ foreach ($command in @('python3', 'svn', 'svnadmin', 'svnlook', 'svnserve')) {
     if (-not (Test-Path -LiteralPath $binary)) { throw "Missing native runtime: $binary" }
 }
 Copy-Item -LiteralPath (Join-Path $projectRoot 'server.py') -Destination $appRoot -Force
+foreach ($module in @('history.py', 'commit_rules.py')) {
+    $modulePath = Join-Path $projectRoot $module
+    if (-not (Test-Path -LiteralPath $modulePath)) { throw "Missing application module: $modulePath" }
+    Copy-Item -LiteralPath $modulePath -Destination $appRoot -Force
+}
 $stagedStatic = Join-Path $appRoot 'static'
 $resolvedStagedStatic = [System.IO.Path]::GetFullPath($stagedStatic)
 $allowedStageRoot = [System.IO.Path]::GetFullPath($appRoot) + [System.IO.Path]::DirectorySeparatorChar

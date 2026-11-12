@@ -1,6 +1,7 @@
 """Check a built FPK's manifest against the source and requested target."""
 import argparse
 import hashlib
+import io
 from pathlib import Path
 import tarfile
 
@@ -32,6 +33,13 @@ def main():
         if item is None:
             raise ValueError("FPK does not contain a regular manifest file")
         package = manifest_fields(item.read().decode("utf-8"))
+        app = archive.extractfile("app.tgz")
+        if app is None:
+            raise ValueError("FPK does not contain app.tgz")
+        with tarfile.open(fileobj=io.BytesIO(app.read()), mode="r:gz") as inner:
+            marker = inner.extractfile("runtime/architecture")
+            if marker is None or marker.read() != (args.arch + "\n").encode("ascii"):
+                raise ValueError("Bundled runtime architecture marker has an incorrect value or line ending")
     expected = {"appname": source["appname"], "version": source["version"],
                 "platform": "x86" if args.arch == "amd64" else "arm"}
     for key, value in expected.items():

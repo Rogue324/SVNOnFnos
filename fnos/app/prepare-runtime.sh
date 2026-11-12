@@ -9,6 +9,7 @@ fail() {
 }
 [ -r "$APP/runtime/architecture" ] || fail 'Cannot determine bundled runtime architecture.'
 read -r runtime_arch < "$APP/runtime/architecture" || fail 'Cannot read bundled runtime architecture.'
+runtime_arch="${runtime_arch%$'\r'}"
 case "$runtime_arch:$(uname -m)" in
     amd64:x86_64|amd64:amd64|arm64:aarch64|arm64:arm64) ;;
     *) fail "This FnSVN package requires a $runtime_arch fnOS system." ;;

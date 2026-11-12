@@ -173,7 +173,7 @@ def main():
     if marker.is_file() and not args.refresh:
         existing = json.loads(marker.read_text(encoding="utf-8"))
         if existing.get("architecture") == arch:
-            architecture_file.write_text(arch + "\n", encoding="utf-8")
+            architecture_file.write_text(arch + "\n", encoding="utf-8", newline="\n")
             print(f"Native runtime already prepared: {runtime} ({arch})")
             return
         print(f"Replacing {existing.get('architecture', 'unknown')} runtime with {arch}")
@@ -264,7 +264,7 @@ def main():
         os.chmod(bindir / tool, 0o755)
     manifest = {"architecture": arch, "distribution": "Debian 12 bookworm", "indexes": [index, security_index],
                 "packages": [{k: entry[k] for k in ("Package", "Version", "Mirror", "Filename", "SHA256")} for entry in packages.values()]}
-    architecture_file.write_text(arch + "\n", encoding="utf-8")
+    architecture_file.write_text(arch + "\n", encoding="utf-8", newline="\n")
     marker.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
     print(f"Prepared native runtime: {len(packages)} packages, {sum(p.stat().st_size for p in target.rglob('*') if p.is_file()) / 1024**2:.1f} MiB")
 

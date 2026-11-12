@@ -2,7 +2,7 @@
 
 为飞牛 fnOS 打造的原生 Subversion 管理应用。FnSVN 以 FPK 应用包安装，自带 Python 与 Subversion 运行库，在应用中心完成启动、停止和运行状态检查，并通过中文 Web 控制台管理仓库、SVN 账户与访问权限。
 
-当前版本：**0.7.0** · 平台：**x86-64 fnOS**（ARM64 为实验性支持，尚需实机验证） · 许可协议：**MIT**
+当前版本：**0.7.1** · 平台：**x86-64 fnOS**（ARM64 为实验性支持，尚需实机验证） · 许可协议：**MIT**
 
 ## 功能
 
@@ -144,11 +144,11 @@ py -3.12 scripts/check-runtime.py --arch arm64
 
 在 GitHub 的 Actions 页面选择 `Build FnSVN FPK` 并手动运行，可分别构建 amd64 和 ARM64 包，并在运行记录的 Artifacts 中下载 FPK 和对应的 SHA256 文件（保留 30 天）。默认不会发布 Release。工作流需要先提交到仓库默认分支，才能在 Actions 页面手动运行。
 
-推送以 `v` 开头的版本标签后，工作流自动构建并创建 Release 草稿。标签必须与 `fnos/manifest` 版本一致（例如 `0.7.0` 对应 `v0.7.0`）：
+推送以 `v` 开头的版本标签后，工作流自动构建并创建 Release 草稿。标签必须与 `fnos/manifest` 版本一致（例如 `0.7.1` 对应 `v0.7.1`）：
 
 ```bash
-git tag v0.7.0
-git push origin v0.7.0
+git tag v0.7.1
+git push origin v0.7.1
 ```
 
 也可手动运行工作流，选择已有版本标签并勾选 `create_draft_release`。两种架构都构建和校验通过后才会创建草稿；如果该标签已有 Release，创建会失败，不会覆盖现有附件。检查和实机验证后由维护者手动发布，草稿不会自动公开。该流程不会自动更新 FnDepot 应用源。ARM64 构建和应用尚未在 ARM fnOS 实机验证，不能以 Actions 成功替代实测。

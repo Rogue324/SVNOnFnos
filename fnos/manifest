@@ -1,7 +1,7 @@
 appname=fnsvn
-version=0.7.0
+version=0.7.1
 display_name=FnSVN
-desc=Subversion repository, user and permission management for fnOS.
+desc=FnSVN 是专为飞牛 fnOS 打造的原生 Subversion 版本库管理工具，自带运行环境，提供中文网页管理界面。<br><br>主要功能：<br>• 仓库管理：创建、浏览、重命名和删除仓库，复制接管已有 SVN 仓库，支持迁移存储目录。<br>• 提交历史：分页浏览历史，按作者和日期筛选，查看提交文件及文本版本差异。<br>• 账户与权限：管理 SVN 账户和用户组，设置仓库及子目录的只读、读写权限，并预览生效权限。<br>• 提交规则与通知：设置提交说明最少字符数和 HTTP 通知，保留已有仓库的 hooks。<br>• 备份：生成、查看和下载单个仓库的完整 SVN dump。<br><br>支持 x86-64 和 ARM64，ARM64 为实验性支持，尚需实机验证，不支持 32 位 ARM。最低支持 fnOS 1.1.3100。远程访问 SVN 服务需要可达的网络连接。
 platform=x86
 os_min_version=1.1.3100
 source=thirdparty

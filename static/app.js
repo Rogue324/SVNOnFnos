@@ -194,9 +194,10 @@ async function openRepository(name, tab = 'files', path = '') {
 
 function renderDetail() {
   const detail = state.detail;
-  content().innerHTML = `<div class="detail-toolbar"><div class="detail-heading"><span class="folder-icon">${icon("folder")}</span><div><h2>${esc(detail.name)}</h2><div class="detail-meta"><span>最新版本 r${esc(detail.revision)}</span><span>UUID ${esc(detail.uuid)}</span></div></div></div><div class="detail-actions"><button class="button small" data-action="back">← 所有仓库</button><button class="button small" data-backup="${esc(detail.name)}">创建备份</button><button class="button small" data-rename-repo="${esc(detail.name)}">改名</button><button class="button small danger" data-delete-repo="${esc(detail.name)}">删除仓库</button></div></div><div class="detail-url">${urlBox(detail.name)}</div><div class="tabs"><button class="tab ${state.tab === 'files' ? 'active' : ''}" data-tab="files">文件浏览</button><button class="tab ${state.tab === 'log' ? 'active' : ''}" data-tab="log">提交日志</button><button class="tab ${state.tab === 'permissions' ? 'active' : ''}" data-tab="permissions">访问权限</button></div><div id="detail-content"></div>`;
+  content().innerHTML = `<div class="detail-toolbar"><div class="detail-heading"><span class="folder-icon">${icon("folder")}</span><div><h2>${esc(detail.name)}</h2><div class="detail-meta"><span>最新版本 r${esc(detail.revision)}</span><span>UUID ${esc(detail.uuid)}</span></div></div></div><div class="detail-actions"><button class="button small" data-action="back">← 所有仓库</button><button class="button small" data-backup="${esc(detail.name)}">创建备份</button><button class="button small" data-rename-repo="${esc(detail.name)}">改名</button><button class="button small danger" data-delete-repo="${esc(detail.name)}">删除仓库</button></div></div><div class="detail-url">${urlBox(detail.name)}</div><div class="tabs"><button class="tab ${state.tab === 'files' ? 'active' : ''}" data-tab="files">文件浏览</button><button class="tab ${state.tab === 'log' ? 'active' : ''}" data-tab="log">提交日志</button><button class="tab ${state.tab === 'activity' ? 'active' : ''}" data-tab="activity">提交热力图</button><button class="tab ${state.tab === 'permissions' ? 'active' : ''}" data-tab="permissions">访问权限</button></div><div id="detail-content"></div>`;
   if (state.tab === 'files') renderFiles();
   else if (state.tab === 'log') renderLog();
+  else if (state.tab === 'activity') renderActivity();
   else renderPermissions();
 }
 
@@ -215,7 +216,7 @@ function formatDate(date) {
 
 function renderLog() {
   const panel = $('#detail-content');
-  panel.innerHTML = `<form id="history-filter" class="data-panel"><label>作者 <input name="author"></label> <label>开始日期 <input name="from" type="date"></label> <label>结束日期 <input name="to" type="date"></label> <button class="button small">搜索</button></form><div id="history-results"></div><div id="history-detail"></div>`;
+  panel.innerHTML = `<form id="history-filter" class="data-panel history-filter"><div class="history-filter-heading"><h3>筛选提交</h3><span>按作者和日期查找提交记录</span></div><div class="history-filter-fields"><label>提交作者<input name="author" placeholder="输入作者名称" autocomplete="off"></label><label>开始日期<input name="from" type="date"></label><label>结束日期<input name="to" type="date"></label><div class="history-filter-actions"><button type="submit" class="button primary">搜索</button><button type="button" class="button" data-history-reset>重置</button></div></div></form><div id="history-results"></div><div id="history-detail"></div>`;
   const form = $('#history-filter', panel), results = $('#history-results', panel), detail = $('#history-detail', panel);
   let pages = [], page = 0, request = 0;
   async function load(before = null) {
@@ -241,32 +242,82 @@ function renderLog() {
       });
     } catch (error) { if (current === request && panel.isConnected) results.textContent = error.message; }
   }
-  form.onsubmit = event => { event.preventDefault(); pages = []; page = 0; detail.innerHTML = ''; load(); }; load();
+  function applyFilter() { pages = []; page = 0; detail.innerHTML = ''; load(); }
+  form.onsubmit = event => { event.preventDefault(); applyFilter(); };
+  $('[data-history-reset]', form).onclick = () => { form.reset(); applyFilter(); };
+  load();
+}
+
+function renderActivity() {
+  const panel = $('#detail-content');
+  const repo = state.detail.name;
+  panel.innerHTML = `<section class="data-panel activity-panel"><div class="activity-header"><div><h2>提交热力图</h2><p class="muted">最近 365 天的提交次数，按 UTC 日期统计。</p></div><label class="activity-author">提交人 <select aria-label="筛选提交人"><option value="">全部提交人</option></select></label></div><div class="activity-result" role="status">正在读取提交活动…</div></section>`;
+  const select = $('.activity-author select', panel), result = $('.activity-result', panel);
+  let request = 0;
+  async function load() {
+    const current = ++request, author = select.value;
+    result.textContent = '正在读取提交活动…';
+    try {
+      const params = new URLSearchParams();
+      if (author) params.set('author', author);
+      const data = await api(`${repoApi(repo)}/activity${params.toString() ? `?${params}` : ''}`);
+      if (!panel.isConnected || current !== request) return;
+      select.innerHTML = `<option value="">全部提交人</option>${(data.authors || []).map(name => `<option value="${esc(name)}"${name === author ? ' selected' : ''}>${esc(name)}</option>`).join('')}`;
+      const counts = new Map((data.entries || []).map(entry => [entry.date, entry.count]));
+      const start = new Date(`${data.startDate}T00:00:00Z`), end = new Date(`${data.endDate}T00:00:00Z`);
+      if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime()) || end < start || (end - start) / 86400000 > 366) throw new Error('提交活动日期范围无效');
+      const cells = Array(start.getUTCDay()).fill('<span class="activity-spacer" aria-hidden="true"></span>');
+      let total = 0;
+      for (let time = start.getTime(); time <= end.getTime(); time += 86400000) {
+        const day = new Date(time).toISOString().slice(0, 10), count = Number(counts.get(day)) || 0;
+        total += count;
+        const level = count === 0 ? 0 : count < 3 ? 1 : count < 6 ? 2 : count < 10 ? 3 : 4;
+        const label = `${day}：${count} 次提交`;
+        cells.push(`<span class="activity-cell activity-level-${level}" tabindex="0" title="${esc(label)}" aria-label="${esc(label)}"></span>`);
+      }
+      result.innerHTML = `<p class="activity-summary">${esc(data.startDate)} 至 ${esc(data.endDate)} · 共 ${total} 次提交${total ? '' : ' · 此期间暂无提交'}</p><div class="activity-scroll" role="region" aria-label="每日提交热力图，可横向滚动" tabindex="0"><div class="activity-grid">${cells.join('')}</div></div><div class="activity-legend"><span>较少</span>${[0, 1, 2, 3, 4].map(n => `<span class="activity-cell activity-level-${n}" aria-hidden="true"></span>`).join('')}<span>较多</span></div>`;
+    } catch (error) {
+      if (panel.isConnected && current === request) result.textContent = `无法读取提交活动：${error.message}`;
+    }
+  }
+  select.addEventListener('change', load);
+  load();
 }
 
 function renderPermissions() {
   const users = state.overview.users;
   const permissions = state.detail.permissions || {};
-  $('#detail-content').innerHTML = `<div class="notice">设置仓库根目录权限，适用于该仓库的所有文件与目录。未授权账户无法访问；匿名访问已禁用。</div>${users.length ? `<form id="permissions-form" class="data-panel"><div class="table-scroll"><table><thead><tr><th>SVN 账户</th><th>仓库权限</th></tr></thead><tbody>${users.map(user => `<tr><td><strong>${esc(user.name)}</strong></td><td><select aria-label="${esc(user.name)} 的权限" data-permission-user="${esc(user.name)}"><option value=""${!permissions[user.name] ? ' selected' : ''}>无权限</option><option value="r"${permissions[user.name] === 'r' ? ' selected' : ''}>只读 · 检出与更新</option><option value="rw"${permissions[user.name] === 'rw' ? ' selected' : ''}>读写 · 允许提交</option></select></td></tr>`).join('')}</tbody></table></div><div class="permissions-footer"><button class="button primary" type="submit">保存权限设置</button></div></form>` : emptyState('♙', '先创建 SVN 账户', '添加账户后，即可为此仓库设置访问权限。', '<button class="button" data-action="goto-users">管理 SVN 账户 →</button>')}`;
-  $('#detail-content').insertAdjacentHTML('beforeend', `<form id="advanced-access" class="data-panel" style="padding:20px;margin-top:20px"><h3>用户组与子目录授权</h3><p class="field-help">使用 JSON 配置用户组和子目录。路径以 / 开头，对象可用 @组名，权限为 r、rw 或空字符串。</p><label>用户组<textarea name="groups" rows="5" style="display:block;width:100%">${esc(JSON.stringify(state.detail.groups || {}, null, 2))}</textarea></label><label>子目录授权<textarea name="paths" rows="8" style="display:block;width:100%">${esc(JSON.stringify(state.detail.pathPermissions || {}, null, 2))}</textarea></label><button class="button primary" type="submit">保存用户组与子目录授权</button></form><form id="access-preview" class="data-panel" style="padding:20px;margin-top:20px"><h3>已保存权限预览</h3><label>账户<select name="user">${users.map(u => `<option value="${esc(u.name)}">${esc(u.name)}</option>`).join('')}</select></label><label>路径<input name="path" value="/" required></label><button class="button" type="submit">查询</button><p id="access-result" role="status"></p></form>`);
-  $('#advanced-access').addEventListener('submit', async event => { event.preventDefault(); try { const groups = JSON.parse(event.target.elements.groups.value), paths = JSON.parse(event.target.elements.paths.value); await api(`${repoApi(state.detail.name)}/access-rules`, { method: 'PUT', body: {groups, paths} }); state.detail.groups = groups; state.detail.pathPermissions = paths; renderPermissions(); toast('用户组与子目录授权已保存'); } catch (error) { toast(error.message, true); } });
-  $('#access-preview').addEventListener('submit', async event => { event.preventDefault(); try { const q = new URLSearchParams({user: event.target.elements.user.value, path: event.target.elements.path.value}); const r = await api(`${repoApi(state.detail.name)}/access-preview?${q}`); $('#access-result').textContent = `权限：${r.permission || '无权限'}；来源：${r.source}`; } catch (error) { $('#access-result').textContent = error.message; } });
-  const footer = $('#permissions-form .permissions-footer');
-  if (footer && Object.keys(state.detail.groups || {}).length) footer.insertAdjacentHTML('beforebegin', `<div style="padding:20px"><h3>根目录用户组授权</h3>${Object.keys(state.detail.groups).map(group => `<label>@${esc(group)} <select data-permission-user="@${esc(group)}"><option value="">无权限</option><option value="r"${permissions['@' + group] === 'r' ? ' selected' : ''}>只读</option><option value="rw"${permissions['@' + group] === 'rw' ? ' selected' : ''}>读写</option></select></label>`).join('')}</div>`);
-  const form = $('#permissions-form');
-  if (form) form.addEventListener('submit', async event => {
-    event.preventDefault();
-    const button = $('button[type="submit"]', form);
-    const values = Object.create(null);
-    form.querySelectorAll('select').forEach(select => { values[select.dataset.permissionUser] = select.value; });
-    button.disabled = true;
-    try {
-      await api(`${repoApi(state.detail.name)}/permissions`, { method: 'PUT', body: { permissions: values } });
-      state.detail.permissions = values;
-      toast('仓库权限已保存');
-    } catch (error) { toast(error.message, true); }
-    finally { button.disabled = false; }
-  });
+  const groups = structuredClone(state.detail.groups || {});
+  const paths = structuredClone(state.detail.pathPermissions || {});
+  const panel = $('#detail-content');
+  const permOptions = value => `<option value=""${value === '' ? ' selected' : ''}>无权限</option><option value="r"${value === 'r' ? ' selected' : ''}>只读</option><option value="rw"${value === 'rw' ? ' selected' : ''}>读写</option>`;
+  const principalLabel = name => name.startsWith('@') ? `用户组 ${name}` : `账户 ${name}`;
+  panel.innerHTML = `<div class="notice">根目录权限适用于整个仓库；子目录可单独配置。未授权账户和匿名访问默认被拒绝。</div>
+    <section class="access-card data-panel"><div class="access-card-heading"><div><h2>仓库根目录权限</h2><p>设置账户和用户组在仓库根目录的权限。</p></div></div>${users.length ? `<form id="permissions-form"><div class="table-scroll"><table><thead><tr><th>账户或用户组</th><th>权限</th></tr></thead><tbody>${users.map(u => `<tr><td><strong>${esc(u.name)}</strong><span class="access-badge">账户</span></td><td><select data-permission-user="${esc(u.name)}" aria-label="${esc(u.name)} 的根目录权限">${permOptions(permissions[u.name] || '')}</select></td></tr>`).join('')}${Object.keys(groups).map(g => `<tr><td><strong>@${esc(g)}</strong><span class="access-badge">用户组</span></td><td><select data-permission-user="@${esc(g)}" aria-label="${esc(g)} 用户组的根目录权限">${permOptions(permissions['@' + g] || '')}</select></td></tr>`).join('')}</tbody></table></div><div class="access-actions"><button class="button primary" type="submit">保存权限设置</button></div></form>` : `<div class="access-empty"><strong>先创建 SVN 账户</strong><br>添加账户后即可设置访问权限。 <button class="text-button" data-action="goto-users">管理 SVN 账户 →</button></div>`}</section>
+    <form id="advanced-access" class="access-card data-panel"><div class="access-card-heading"><div><h2>用户组与子目录授权</h2><p>用户组在所有仓库共享；子目录权限仅应用于当前仓库。</p></div></div><div class="access-section"><div class="access-section-heading"><div><h3>用户组</h3><p>将账户加入用户组，便于统一授权。</p></div><button class="button small" type="button" data-add-group>＋ 新建用户组</button></div><div id="group-list"></div></div><div class="access-section"><div class="access-section-heading"><div><h3>子目录授权</h3><p>指定以 / 开头的仓库目录，以及账户或用户组的权限。</p></div><button class="button small" type="button" data-add-path>＋ 添加目录</button></div><div id="path-list"></div></div><div class="access-actions"><span class="access-unsaved">更改后请保存，才会影响实际访问权限。</span><button class="button primary" type="submit">保存用户组与目录授权</button></div></form>
+    <form id="access-preview" class="access-card data-panel"><div class="access-card-heading"><div><h2>实际生效权限预览</h2><p>按已保存的配置查询，包含根目录、子目录与用户组规则。</p></div></div><div class="access-preview-fields"><label>SVN 账户<select name="user" required>${users.map(u => `<option value="${esc(u.name)}">${esc(u.name)}</option>`).join('')}</select></label><label>仓库路径<input name="path" value="/" placeholder="例如 /trunk" required></label><button class="button" type="submit"${users.length ? '' : ' disabled'}>查询权限</button></div><p id="access-result" class="access-result" role="status">输入路径后查询已保存的权限。</p></form>`;
+  const advanced = $('#advanced-access', panel), groupList = $('#group-list', panel), pathList = $('#path-list', panel);
+  function drawGroups() {
+    const names = Object.keys(groups);
+    groupList.innerHTML = names.length ? names.map(g => `<div class="access-item"><div class="access-item-head"><strong>@${esc(g)}</strong><button class="text-button danger-text" type="button" data-delete-group="${esc(g)}">删除用户组</button></div><div class="access-members">${users.length ? users.map(u => `<label class="access-member"><input type="checkbox" data-group="${esc(g)}" value="${esc(u.name)}"${groups[g].includes(u.name) ? ' checked' : ''}>${esc(u.name)}</label>`).join('') : '<span class="access-muted">暂无 SVN 账户</span>'}</div></div>`).join('') : '<div class="access-empty">还没有用户组。创建用户组后，可以为一组账户统一授权。</div>';
+    groupList.querySelectorAll('[data-group]').forEach(input => input.addEventListener('change', () => { const members = groups[input.dataset.group]; if (input.checked) { if (!members.includes(input.value)) members.push(input.value); } else groups[input.dataset.group] = members.filter(u => u !== input.value); }));
+    groupList.querySelectorAll('[data-delete-group]').forEach(button => button.addEventListener('click', () => { const group = button.dataset.deleteGroup; if (Object.keys(paths).some(path => Object.hasOwn(paths[path], '@' + group)) || Object.hasOwn(state.detail.permissions || {}, '@' + group)) { toast('该用户组仍有授权，请先移除其根目录和子目录授权并保存', true); return; } delete groups[group]; drawGroups(); drawPaths(); }));
+  }
+  function drawPaths() {
+    const names = Object.keys(paths);
+    pathList.innerHTML = names.length ? names.map(path => `<div class="access-item"><div class="access-item-head"><strong class="access-path">${esc(path)}</strong><button class="text-button danger-text" type="button" data-delete-path="${esc(path)}">移除目录</button></div><div class="access-rules">${Object.entries(paths[path]).map(([principal, permission]) => `<div class="access-rule"><span>${esc(principalLabel(principal))}</span><select data-rule-path="${esc(path)}" data-rule-principal="${esc(principal)}" aria-label="${esc(path)} 中 ${esc(principal)} 的权限">${permOptions(permission)}</select><button class="text-button danger-text" type="button" data-delete-rule-path="${esc(path)}" data-delete-rule-principal="${esc(principal)}">移除</button></div>`).join('') || '<div class="access-muted">尚未添加授权对象，将继承上级目录权限。</div>'}</div><div class="access-add-rule"><label>授权对象<select data-principal-for="${esc(path)}">${users.map(u => `<option value="${esc(u.name)}">账户 ${esc(u.name)}</option>`).join('')}${Object.keys(groups).map(g => `<option value="@${esc(g)}">用户组 @${esc(g)}</option>`).join('')}</select></label><button class="button small" type="button" data-add-rule="${esc(path)}"${users.length || Object.keys(groups).length ? '' : ' disabled'}>添加授权</button></div></div>`).join('') : '<div class="access-empty">还没有子目录授权。未单独设置的目录继承上级权限。</div>';
+    pathList.querySelectorAll('[data-delete-path]').forEach(b => b.onclick = () => { delete paths[b.dataset.deletePath]; drawPaths(); });
+    pathList.querySelectorAll('[data-rule-path]').forEach(s => s.onchange = () => { paths[s.dataset.rulePath][s.dataset.rulePrincipal] = s.value; });
+    pathList.querySelectorAll('[data-delete-rule-path]').forEach(b => b.onclick = () => { delete paths[b.dataset.deleteRulePath][b.dataset.deleteRulePrincipal]; drawPaths(); });
+    pathList.querySelectorAll('[data-add-rule]').forEach(b => b.onclick = () => { const path = b.dataset.addRule, select = [...pathList.querySelectorAll('[data-principal-for]')].find(s => s.dataset.principalFor === path), principal = select.value; if (Object.hasOwn(paths[path], principal)) return toast('该对象已有授权，请直接修改权限', true); paths[path][principal] = 'r'; drawPaths(); });
+  }
+  advanced.querySelector('[data-add-group]').onclick = () => openModal('新建用户组', '<label>用户组名称<input name="group" required maxlength="64" pattern="[A-Za-z][A-Za-z0-9_\\-]{0,63}" placeholder="例如 developers"></label><p class="field-help">以英文字母开头，可包含字母、数字、连字符和下划线。</p>', async values => { const group = values.group.trim(); if (Object.hasOwn(groups, group)) throw new Error('用户组已存在'); groups[group] = []; drawGroups(); drawPaths(); });
+  advanced.querySelector('[data-add-path]').onclick = () => openModal('添加子目录', '<label>仓库目录路径<input name="path" required placeholder="例如 /trunk/project"></label><p class="field-help">从仓库根目录开始，以 / 开头。</p>', async values => { const path = values.path.trim(); if (!path.startsWith('/') || path === '/' || path.endsWith('/') || /[\[\]\\\r\n]/.test(path) || path.slice(1).split('/').some(x => !x || x === '.' || x === '..')) throw new Error('请输入有效的子目录路径，例如 /trunk/project'); if (Object.hasOwn(paths, path)) throw new Error('该目录已存在'); paths[path] = {}; drawPaths(); });
+  advanced.addEventListener('submit', async event => { event.preventDefault(); const button = advanced.querySelector('[type="submit"]'); button.disabled = true; try { const rootValues = Object.fromEntries([...panel.querySelectorAll('[data-permission-user]')].map(s => [s.dataset.permissionUser, s.value])); await api(`${repoApi(state.detail.name)}/access-rules`, { method: 'PUT', body: {groups, paths} }); state.detail.groups = groups; state.detail.pathPermissions = paths; renderPermissions(); panel.querySelectorAll('[data-permission-user]').forEach(s => { if (Object.hasOwn(rootValues, s.dataset.permissionUser)) s.value = rootValues[s.dataset.permissionUser]; }); toast('用户组与子目录授权已保存'); } catch (error) { toast(error.message, true); } finally { button.disabled = false; } });
+  $('#access-preview', panel).addEventListener('submit', async event => { event.preventDefault(); const output = $('#access-result', panel); output.textContent = '正在查询…'; try { const q = new URLSearchParams({user: event.target.elements.user.value, path: event.target.elements.path.value}); const r = await api(`${repoApi(state.detail.name)}/access-preview?${q}`); output.textContent = `实际权限：${r.permission === 'rw' ? '读写' : r.permission === 'r' ? '只读' : '无权限'} · 生效路径：${r.source}`; } catch (error) { output.textContent = error.message; } });
+  const form = $('#permissions-form', panel);
+  if (form) form.addEventListener('submit', async event => { event.preventDefault(); const button = form.querySelector('[type="submit"]'), values = Object.create(null); form.querySelectorAll('[data-permission-user]').forEach(select => { if (select.value) values[select.dataset.permissionUser] = select.value; }); button.disabled = true; try { await api(`${repoApi(state.detail.name)}/permissions`, {method: 'PUT', body: {permissions: values}}); state.detail.permissions = values; toast('仓库权限已保存'); } catch (error) { toast(error.message, true); } finally { button.disabled = false; } });
+  drawGroups(); drawPaths();
 }
 
 function renderError(error) {

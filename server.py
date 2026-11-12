@@ -5,7 +5,7 @@ import history
 from collections import deque
 import ctypes
 import errno
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import hashlib
 import hmac
 import ipaddress
@@ -444,6 +444,36 @@ class Store:
                             "date": e.findtext("date", ""), "message": e.findtext("msg", "")} for e in logs.findall("logentry")],
                       permissions=self.state["repositories"][key], groups=self.state.get("groups", {}), pathPermissions=self.state.get("path_permissions", {}).get(key, {}))
         return result
+
+    def activity(self, key, author=""):
+        repo = self.repo(key)
+        if not isinstance(author, str) or len(author) > 256:
+            raise Error("无效的作者")
+        end = datetime.now(timezone.utc).date()
+        start = end - timedelta(days=364)
+        counts = {}
+        authors = set()
+        if int(run("svnlook", "youngest", str(repo)).strip()) > 0:
+            logs = ET.fromstring(run("svn", "log", "--xml", "--quiet", "--non-interactive",
+                                     "-r", "HEAD:1", repo.as_uri() + "@HEAD"))
+            for entry in logs.findall("logentry"):
+                timestamp = entry.findtext("date", "")
+                try:
+                    date = datetime.fromisoformat(timestamp.replace("Z", "+00:00")).astimezone(timezone.utc).date()
+                except (ValueError, OverflowError):
+                    continue
+                if not start <= date <= end:
+                    continue
+                username = entry.findtext("author", "")
+                if username:
+                    authors.add(username)
+                if author and username != author:
+                    continue
+                day = date.isoformat()
+                counts[day] = counts.get(day, 0) + 1
+        return {"entries": [{"date": day, "count": counts[day]} for day in sorted(counts)],
+                "authors": sorted(authors, key=str.casefold), "startDate": start.isoformat(),
+                "endDate": end.isoformat(), "timezone": "UTC"}
 
     def backup(self, key):
         repo = self.repo(key)
@@ -1007,6 +1037,10 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send(200, history.revision_files(self.store, key, parts[4], run, Error))
             if len(parts) == 4 and parts[3] == "compare" and method == "GET":
                 return self.send(200, history.compare(self.store, key, parse_qs(parsed.query), run, Error))
+            if len(parts) == 4 and parts[3] == "activity" and method == "GET":
+                author = parse_qs(parsed.query).get("author", [""])[0]
+                with self.store.lock:
+                    return self.send(200, self.store.activity(key, author))
             if len(parts) == 4 and parts[3] == "rename" and method == "POST":
                 return self.send(200, rename_repository(self.server, key, self.body().get("name")))
             if len(parts) == 4 and parts[3] == "access-preview" and method == "GET":

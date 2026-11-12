@@ -1,5 +1,5 @@
 appname=fnsvn
-version=0.6.0
+version=0.7.0
 display_name=FnSVN
 desc=Subversion repository, user and permission management for fnOS.
 platform=x86

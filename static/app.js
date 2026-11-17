@@ -162,7 +162,7 @@ function renderRepositoryCards(filter) {
 
 function renderUsers() {
   const users = state.overview.users;
-  content().innerHTML = `<div class="notice">SVN 账户用于客户端检出、更新和提交，与 Web 管理员账户独立。创建账户后，请在仓库的「访问权限」中授予读取或读写权限。</div><div class="section-toolbar"><h2>客户端账户 <span>${users.length} 个账户</span></h2><span class="muted">按仓库独立授权</span></div>${users.length ? `<div class="data-panel table-scroll"><table><thead><tr><th>账户名称</th><th>账户类型</th><th>操作</th></tr></thead><tbody>${users.map(user => `<tr><td><span class="user-symbol">${esc(user.name.slice(0, 1).toUpperCase())}</span><strong>${esc(user.name)}</strong></td><td><span class="tag">SVN 客户端</span></td><td><button class="text-button user-password-button" data-reset-password="${esc(user.name)}">修改密码</button><button class="text-button" data-delete-user="${esc(user.name)}">删除账户</button></td></tr>`).join('')}</tbody></table></div>` : emptyState('♙', '还没有 SVN 账户', '为需要访问仓库的成员创建账户。', '<button class="button primary" data-action="create-user">＋ 新建账户</button>')}`;
+  content().innerHTML = `<div class="notice">SVN 账户用于客户端检出、更新和提交，与 Web 管理员账户独立。创建账户后，请在仓库的「访问权限」中授予读取或读写权限。</div><div class="section-toolbar"><h2>客户端账户 <span>${users.length} 个账户</span></h2><span class="muted">按仓库独立授权</span></div>${users.length ? `<div class="data-panel table-scroll"><table><thead><tr><th>账户名称</th><th>账户类型</th><th>操作</th></tr></thead><tbody>${users.map(user => `<tr><td><span class="user-symbol">${esc(user.name.slice(0, 1).toUpperCase())}</span><strong>${esc(user.name)}</strong></td><td><span class="tag">SVN 客户端</span></td><td><button class="text-button user-password-button" data-reset-password="${esc(user.name)}">修改密码</button><button class="text-button danger-text" data-delete-user="${esc(user.name)}">删除账户</button></td></tr>`).join('')}</tbody></table></div>` : emptyState('♙', '还没有 SVN 账户', '为需要访问仓库的成员创建账户。', '<button class="button primary" data-action="create-user">＋ 新建账户</button>')}`;
 }
 
 function formatSize(size) {
@@ -218,7 +218,7 @@ function renderLog() {
   const panel = $('#detail-content');
   panel.innerHTML = `<form id="history-filter" class="data-panel history-filter"><div class="history-filter-heading"><h3>筛选提交</h3><span>按作者和日期查找提交记录</span></div><div class="history-filter-fields"><label>提交作者<input name="author" placeholder="输入作者名称" autocomplete="off"></label><label>开始日期<input name="from" type="date"></label><label>结束日期<input name="to" type="date"></label><div class="history-filter-actions"><button type="submit" class="button primary">搜索</button><button type="button" class="button" data-history-reset>重置</button></div></div></form><div id="history-results"></div><div id="history-detail"></div>`;
   const form = $('#history-filter', panel), results = $('#history-results', panel), detail = $('#history-detail', panel);
-  let pages = [], page = 0, request = 0;
+  let pages = [], page = 0, request = 0, detailRequest = 0, compareRequest = 0;
   async function load(before = null) {
     const current = ++request; results.textContent = '正在读取提交历史…';
     const params = new URLSearchParams(new FormData(form)); if (before !== null) params.set('before', before);
@@ -226,19 +226,21 @@ function renderLog() {
       const data = await api(`${repoApi(state.detail.name)}/history?${params}`);
       if (current !== request || !panel.isConnected) return;
       pages[page] = {before, next: data.nextBefore};
-      results.innerHTML = `<div class="data-panel table-scroll"><table><thead><tr><th>版本</th><th>提交人</th><th>时间</th><th>提交说明</th></tr></thead><tbody>${data.entries.map(log => `<tr><td><button class="text-button" data-history-revision="${log.revision}">r${log.revision}</button></td><td>${esc(log.author || '—')}</td><td>${esc(formatDate(log.date))}</td><td>${esc(log.message || '未填写提交说明')}</td></tr>`).join('') || '<tr><td colspan="4">没有匹配的提交。</td></tr>'}</tbody></table><button class="button small" data-history-prev ${page === 0 ? 'disabled' : ''}>上一页</button> 第 ${page + 1} 页 <button class="button small" data-history-next ${data.nextBefore === null ? 'disabled' : ''}>下一页</button></div>`;
+      results.innerHTML = `<div class="data-panel table-scroll"><table><thead><tr><th>版本</th><th>提交人</th><th>时间</th><th>提交说明</th></tr></thead><tbody>${data.entries.map(log => `<tr><td><button class="text-button revision-pill" data-history-revision="${log.revision}">r${log.revision}</button></td><td><strong>${esc(log.author || '—')}</strong></td><td>${esc(formatDate(log.date))}</td><td class="log-message">${esc(log.message || '未填写提交说明')}</td></tr>`).join('') || '<tr><td class="table-empty" colspan="4">没有匹配的提交。</td></tr>'}</tbody></table><div class="table-pagination"><button class="button small" data-history-prev ${page === 0 ? 'disabled' : ''}>上一页</button><span class="pagination-info">第 ${page + 1} 页</span><button class="button small" data-history-next ${data.nextBefore === null ? 'disabled' : ''}>下一页</button></div></div>`;
       $('[data-history-prev]', results).onclick = () => { page--; load(pages[page].before); };
       $('[data-history-next]', results).onclick = () => { page++; load(data.nextBefore); };
       results.querySelectorAll('[data-history-revision]').forEach(button => button.onclick = async () => {
+        const currentDetail = ++detailRequest;
         const revision = Number(button.dataset.historyRevision); detail.textContent = '正在读取提交文件…';
         try {
-          const files = await api(`${repoApi(state.detail.name)}/history/${revision}`); if (!panel.isConnected) return;
-          detail.innerHTML = `<section class="data-panel"><h3>r${revision} 的变更文件</h3>${files.files.map(file => `<div>${esc(file.action)} ${esc(file.path)} ${file.kind !== 'dir' ? `<button class="text-button" data-compare-path="${esc(file.path)}">比较文本</button>` : ''}</div>`).join('') || '没有文件变更'}<p>比较版本：<input id="history-old" type="number" min="0" value="${revision - 1}" aria-label="原版本"> 至 <input id="history-new" type="number" min="0" value="${revision}" aria-label="新版本"></p><pre id="history-diff" style="white-space:pre-wrap;overflow-wrap:anywhere"></pre></section>`;
+          const files = await api(`${repoApi(state.detail.name)}/history/${revision}`); if (!panel.isConnected || currentDetail !== detailRequest) return;
+          detail.innerHTML = `<section class="data-panel history-detail-panel"><h3>r${revision} 的变更文件</h3><div class="history-file-list">${files.files.map(file => `<div class="history-file-row"><span class="action-badge action-${esc((file.action || '').toLowerCase())}">${esc(file.action)}</span><code class="history-file-path">${esc(file.path)}</code>${file.kind !== 'dir' ? `<button class="text-button" data-compare-path="${esc(file.path)}">比较文本</button>` : ''}</div>`).join('') || '<p class="muted">没有文件变更</p>'}</div><div class="history-compare-bar"><span>比较版本：</span><input id="history-old" type="number" min="0" value="${revision - 1}" aria-label="原版本"><span>至</span><input id="history-new" type="number" min="0" value="${revision}" aria-label="新版本"><span class="muted">（点击上方文件的「比较文本」查看差异）</span></div><pre id="history-diff" class="history-diff"></pre></section>`;
           detail.querySelectorAll('[data-compare-path]').forEach(compare => compare.onclick = async () => {
+            const currentCompare = ++compareRequest;
             const output = $('#history-diff', detail); output.textContent = '正在比较…';
-            try { const q = new URLSearchParams({path: compare.dataset.comparePath, old: $('#history-old', detail).value, new: $('#history-new', detail).value}); const result = await api(`${repoApi(state.detail.name)}/compare?${q}`); output.textContent = result.diff || '没有文本差异'; } catch (error) { output.textContent = error.message; }
+            try { const q = new URLSearchParams({path: compare.dataset.comparePath, old: $('#history-old', detail).value, new: $('#history-new', detail).value}); const result = await api(`${repoApi(state.detail.name)}/compare?${q}`); if (currentCompare === compareRequest) output.textContent = result.diff || '没有文本差异'; } catch (error) { if (currentCompare === compareRequest) output.textContent = error.message; }
           });
-        } catch (error) { detail.textContent = error.message; }
+        } catch (error) { if (currentDetail === detailRequest) detail.textContent = error.message; }
       });
     } catch (error) { if (current === request && panel.isConnected) results.textContent = error.message; }
   }
@@ -596,16 +598,18 @@ $('#global-search').addEventListener('input', async event => {
 });
 
 document.addEventListener('click', async event => {
-  const target = event.target.closest('button, a[data-action]');
+  const target = event.target.closest('button, a[data-action], a[data-view]');
   if (state.repositoryBusy) { if (target) toast('正在处理仓库，请等待完成'); return; }
   if (!target) {
+    if (window.getSelection && String(window.getSelection()).length > 0) return;
     const card = event.target.closest('[data-card-repo]');
-    if (card && !event.target.closest('input, select, a')) {
+    if (card && !event.target.closest('input, select, a, .repo-url')) {
       try { await openRepository(card.dataset.cardRepo); } catch (error) { toast(error.message, true); }
     }
     return;
   }
   try {
+    if (target.tagName === 'A' && target.dataset.view) event.preventDefault();
     if (state.settingsSaving && (target.dataset.view || target.id === 'logout')) { toast('正在保存设置，请等待完成'); return; }
     if (target.dataset.view) await navigate(target.dataset.view);
     else if (target.dataset.repo !== undefined) await openRepository(target.dataset.repo);

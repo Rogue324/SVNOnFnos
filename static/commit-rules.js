@@ -7,6 +7,7 @@ new MutationObserver(() => {
   button.textContent = '提交规则与通知';
   button.dataset.commitRules = '';
   button.addEventListener('click', async () => {
+    if (state.repositoryBusy || state.settingsSaving) return;
     try {
       const repo = state.detail.name;
       const config = await api(`${repoApi(repo)}/commit-rules`);
@@ -14,7 +15,9 @@ new MutationObserver(() => {
         await api(`${repoApi(repo)}/commit-rules`, {method: 'PUT', body: {minMessageLength: Number(values.minMessageLength), notificationUrl: values.notificationUrl}});
         toast('提交规则已保存');
       });
-    } catch (error) { toast(error.message); }
+      const submit = document.querySelector('#modal-form [data-modal-submit]');
+      if (submit) submit.textContent = '保存规则';
+    } catch (error) { toast(error.message, true); }
   });
   actions.appendChild(button);
 }).observe(document.getElementById('view-content'), {childList: true, subtree: true});

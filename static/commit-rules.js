@@ -11,8 +11,8 @@ new MutationObserver(() => {
     try {
       const repo = state.detail.name;
       const config = await api(`${repoApi(repo)}/commit-rules`);
-      openModal('提交规则与通知', `<p class="field-help">提交说明不足时拒绝提交。通知以 JSON POST 发送，失败不会撤销已完成的提交。已有 hooks 会继续执行。</p><label>提交说明最少字符数<input name="minMessageLength" type="number" min="0" max="10000" value="${esc(config.minMessageLength)}" required></label><label>通知地址（可留空）<input name="notificationUrl" type="url" maxlength="2048" value="${esc(config.notificationUrl)}" placeholder="https://example.com/webhook"></label>`, async values => {
-        await api(`${repoApi(repo)}/commit-rules`, {method: 'PUT', body: {minMessageLength: Number(values.minMessageLength), notificationUrl: values.notificationUrl}});
+      openModal('提交规则与通知', `<p class="field-help">提交说明不足时拒绝提交。通知以 JSON POST 发送，失败不会撤销已完成的提交。已有 hooks 会继续执行。</p><label>提交说明最少字符数<input name="minMessageLength" type="number" min="0" max="10000" step="1" value="${esc(config.minMessageLength)}" required></label><label>通知地址（可留空）<input name="notificationUrl" type="url" maxlength="2048" value="${esc(config.notificationUrl)}" placeholder="https://example.com/webhook"></label>`, async values => {
+        await api(`${repoApi(repo)}/commit-rules`, {method: 'PUT', body: {minMessageLength: Number(values.minMessageLength), notificationUrl: values.notificationUrl.trim()}});
         toast('提交规则已保存');
       });
       const submit = document.querySelector('#modal-form [data-modal-submit]');

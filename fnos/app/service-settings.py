@@ -37,12 +37,16 @@ def validate(value):
     protected = (data / "config", data / "backups", data / "deleted")
     if root == data or root in data.parents or any(root.is_relative_to(p) or p.is_relative_to(root) for p in protected):
         raise ValueError("仓库目录必须与应用配置和备份目录分开，请使用 SVN 专用子目录。")
-    root.mkdir(parents=True, exist_ok=True, mode=0o700)
     # Test actual access as the package user; never rewrite existing directory ACLs.
     try:
+        root.mkdir(parents=True, exist_ok=True, mode=0o700)
+        with os.scandir(root) as entries:
+            next(entries, None)
         with tempfile.TemporaryDirectory(prefix=".fnsvn-access-", dir=root) as probe:
             test = Path(probe) / "write-test"
             test.write_text("FnSVN access check", encoding="utf-8")
+            if test.read_text(encoding="utf-8") != "FnSVN access check":
+                raise OSError("目录读写校验失败")
             test.rename(Path(probe) / "rename-test")
     except OSError as exc:
         raise ValueError("仓库目录不可读写，请在飞牛中授权 FnSVN 应用用户访问此目录。") from exc

@@ -432,17 +432,22 @@ class Store:
         return {"repositories": found, "warnings": warnings, "truncated": truncated}
 
     def browse(self, key, path=""):
-        repo = self.repo(key)
+        with self.lock:
+            repo = self.repo(key)
         if "\x00" in path or "\\" in path or any(p in (".", "..") for p in path.split("/")):
             raise Error("无效的仓库路径")
         url = repo.as_uri() + "/" + quote(path.strip("/"), safe="/") + "@HEAD"
         listing = ET.fromstring(run("svn", "list", "--xml", "--non-interactive", url))
         logs = ET.fromstring(run("svn", "log", "--xml", "--non-interactive", "-l", "30", repo.as_uri() + "@HEAD"))
         result = self.summary(key)
+        with self.lock:
+            perms = dict(self.state["repositories"].get(key, {}))
+            groups = {g: list(m) for g, m in self.state.get("groups", {}).items()}
+            path_perms = {p: dict(r) for p, r in self.state.get("path_permissions", {}).get(key, {}).items()}
         result.update(entries=[{"name": e.findtext("name"), "kind": e.get("kind")} for e in listing.findall(".//entry")],
                       log=[{"revision": int(e.get("revision")), "author": e.findtext("author", ""),
                             "date": e.findtext("date", ""), "message": e.findtext("msg", "")} for e in logs.findall("logentry")],
-                      permissions=self.state["repositories"][key], groups=self.state.get("groups", {}), pathPermissions=self.state.get("path_permissions", {}).get(key, {}))
+                      permissions=perms, groups=groups, pathPermissions=path_perms)
         return result
 
     def activity(self, key, author=""):
@@ -476,12 +481,13 @@ class Store:
                 "endDate": end.isoformat(), "timezone": "UTC"}
 
     def backup(self, key):
-        repo = self.repo(key)
         if not self.backup_lock.acquire(blocking=False):
             raise Error("已有备份任务正在运行", 409)
         target = self.root / "backups" / f"{key}-{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}-{secrets.token_hex(3)}.svndump"
         tmp = target.with_suffix(".partial")
         try:
+            with self.lock:
+                repo = self.repo(key)
             with tmp.open("wb") as output:
                 proc = subprocess.run(["svnadmin", "dump", "--quiet", str(repo)], stdout=output,
                                       stderr=subprocess.PIPE, timeout=3600)
@@ -777,10 +783,7 @@ def save_settings(server, body):
             if changing:
                 # Threads keep all sessions in the managed svnserve process, so
                 # stopping it also closes writers before taking the copies.
-                server.maintenance = True
-                if server.svn_process is not None:
-                    server.svn_process.terminate()
-                    server.svn_process.wait(timeout=20)
+                pause_svn(server)
                 stage = Path(tempfile.mkdtemp(prefix=".fnsvn-migration-", dir=destination))
                 for key in keys:
                     if server.stop_event.is_set():
@@ -842,7 +845,7 @@ def save_settings(server, body):
 
 
 class Handler(BaseHTTPRequestHandler):
-    server_version = "FnSVN/0.5.0"
+    server_version = "FnSVN/0.7.4"
 
     def log_message(self, fmt, *args):
         # Do not log cookies, credentials or request bodies.
@@ -983,9 +986,15 @@ class Handler(BaseHTTPRequestHandler):
         if parts == ["api", "logout"] and method == "POST":
             if not self.server.auth_required:
                 return self.send(200, {"ok": True, "authRequired": False})
-            cookie = cookies.SimpleCookie(self.headers.get("Cookie", ""))
-            with self.store.lock:
-                self.store.sessions.pop(cookie["fnsvn_session"].value, None)
+            cookie = cookies.SimpleCookie()
+            try:
+                cookie.load(self.headers.get("Cookie", ""))
+            except cookies.CookieError:
+                pass
+            morsel = cookie.get("fnsvn_session")
+            if morsel is not None:
+                with self.store.lock:
+                    self.store.sessions.pop(morsel.value, None)
             return self.send(200, {"ok": True}, extra={"Set-Cookie": f"fnsvn_session=; Path={self.cookie_path}; Max-Age=0; HttpOnly; SameSite=Strict"})
         if parts == ["api", "overview"] and method == "GET":
             with self.store.lock:
@@ -1026,7 +1035,8 @@ class Handler(BaseHTTPRequestHandler):
             return self.send(200, {"ok": True})
         if len(parts) >= 3 and parts[:2] == ["api", "repositories"]:
             key = parts[2]
-            self.store.repo(key)
+            with self.store.lock:
+                self.store.repo(key)
             if len(parts) == 3 and method == "DELETE":
                 return self.send(200, delete_repository(self.server, key, self.body().get("confirmName")))
             if len(parts) == 3 and method == "GET":
@@ -1046,11 +1056,16 @@ class Handler(BaseHTTPRequestHandler):
             if len(parts) == 4 and parts[3] == "access-preview" and method == "GET":
                 q = parse_qs(parsed.query)
                 username, path = q.get("user", [""])[0], q.get("path", ["/"])[0]
-                if username not in self.store.state["users"] or not path.startswith("/") or any(x in (".", "..") for x in path.split("/")): raise Error("无效的用户或路径")
+                normalized = path.rstrip("/") or "/"
+                if (not path.startswith("/") or "\\" in path or any(ord(c) < 32 for c in path)
+                        or (normalized != "/" and any(x in ("", ".", "..") for x in normalized[1:].split("/")))):
+                    raise Error("无效的用户或路径")
                 with self.store.lock:
+                    if username not in self.store.state["users"]:
+                        raise Error("无效的用户或路径")
                     sections = {"/": {"*": "", **self.store.state["repositories"][key]}, **self.store.state.get("path_permissions", {}).get(key, {})}
                     groups = self.store.state.get("groups", {})
-                    path = path.rstrip("/") or "/"
+                    path = normalized
                     while True:
                         rules = sections.get(path, {})
                         matched = [rules["@" + g] for g, members in groups.items() if username in members and "@" + g in rules]
@@ -1069,7 +1084,7 @@ class Handler(BaseHTTPRequestHandler):
                         name(group)
                         if not isinstance(members, list) or any(not isinstance(u, str) or u not in users for u in members) or len(set(members)) != len(members): raise Error("用户组成员无效")
                     for path, rules in paths.items():
-                        if not isinstance(path, str) or not path.startswith("/") or path == "/" or path.endswith("/") or any(c in path for c in "[]\\\n\r") or any(x in ("", ".", "..") for x in path[1:].split("/")): raise Error("子目录路径无效")
+                        if not isinstance(path, str) or not path.startswith("/") or path == "/" or path.endswith("/") or any(c in path for c in "[]\\\n\r") or any(ord(c) < 32 for c in path) or any(x in ("", ".", "..") for x in path[1:].split("/")): raise Error("子目录路径无效")
                         if not isinstance(rules, dict) or any((u not in users and not (u.startswith("@") and u[1:] in groups)) or v not in ("", "r", "rw") for u, v in rules.items()): raise Error("授权对象或权限无效")
                     for repo, existing in self.store.state.get("path_permissions", {}).items():
                         if repo != key and any(u.startswith("@") and u[1:] not in groups for rules in existing.values() for u in rules): raise Error("其他仓库仍使用被删除的用户组")
@@ -1112,7 +1127,7 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_response(200)
                 self.send_header("Content-Type", "application/octet-stream")
                 self.send_header("Content-Disposition", f'attachment; filename="{filename}"')
-                self.send_header("Content-Length", str(path.stat().st_size))
+                self.send_header("Content-Length", str(os.fstat(stream.fileno()).st_size))
                 self.send_header("Cache-Control", "no-store")
                 self.send_header("X-Content-Type-Options", "nosniff")
                 self.end_headers()

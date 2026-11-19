@@ -35,7 +35,7 @@ def history(store, key, query, run, Error):
             cursor = revision - 1
             username, timestamp = item.findtext('author', ''), item.findtext('date', '')
             day = timestamp[:10]
-            if (author and author.casefold() not in username.casefold()) or (start and day < start) or (end and day > end):
+            if (author and author.casefold() not in username.casefold()) or ((start or end) and not day) or (start and day < start) or (end and day > end):
                 continue
             entries.append({'revision': revision, 'author': username, 'date': timestamp, 'message': item.findtext('msg', '')})
             if len(entries) == limit:

@@ -5,6 +5,7 @@ import shlex
 import shutil
 import subprocess
 import sys
+import urllib.parse
 import urllib.request
 
 MARKER = '# FnSVN managed hook v1'
@@ -16,9 +17,16 @@ def load(repo):
 
 def save(repo, config):
     length = config.get('minMessageLength', 0)
-    url = config.get('notificationUrl', '')
-    if type(length) is not int or not 0 <= length <= 10000 or not isinstance(url, str) or len(url) > 2048 or (url and not url.startswith(('http://', 'https://'))):
+    raw_url = config.get('notificationUrl', '')
+    if type(length) is not int or not 0 <= length <= 10000 or not isinstance(raw_url, str):
         raise ValueError('无效的提交规则或通知地址')
+    url = raw_url.strip()
+    if len(url) > 2048 or any(ord(c) < 32 or c.isspace() for c in url):
+        raise ValueError('无效的提交规则或通知地址')
+    if url:
+        parsed = urllib.parse.urlsplit(url)
+        if parsed.scheme not in ('http', 'https') or not parsed.hostname:
+            raise ValueError('无效的提交规则或通知地址')
     hooks = Path(repo) / 'hooks'
     hooks.mkdir(exist_ok=True)
     # Refuse ambiguous or externally modified installations before touching anything.
@@ -67,8 +75,12 @@ def run_hook(kind, repo, revision):
     config = load(repo)
     svnlook = os.environ.get('FNSVN_SVNLOOK') or shutil.which('svnlook') or 'svnlook'
     flag = '-t' if kind == 'pre-commit' else '-r'
+    env = dict(os.environ)
+    if os.name != 'nt' and env.get('LC_ALL', '') in ('', 'C', 'POSIX'):
+        env['LC_ALL'] = 'C.UTF-8'
+        env.setdefault('LANG', 'C.UTF-8')
     def get(field):
-        return subprocess.check_output([svnlook, field, flag, revision, repo], stderr=subprocess.PIPE).decode('utf-8', errors='replace').strip()
+        return subprocess.check_output([svnlook, field, flag, revision, repo], stderr=subprocess.PIPE, env=env).decode('utf-8', errors='replace').strip()
     if kind == 'pre-commit':
         if len(get('log')) < config['minMessageLength']:
             print('提交说明至少需要 %s 个字符' % config['minMessageLength'], file=sys.stderr)

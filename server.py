@@ -296,6 +296,8 @@ class Store:
                 probe.unlink(missing_ok=True)
         self.sync()
         for key in self.state["repositories"]:
+            if not self.is_repo_enabled(key):
+                self.configure_repo(self.repo(key), enabled=False)
             if (self.repo(key) / "hooks" / "fnsvn-rules.json").is_file():
                 commit_rules.save(self.repo(key), commit_rules.load(self.repo(key)))
 
@@ -324,6 +326,11 @@ class Store:
         paths = self.state.setdefault("path_permissions", {})
         if new in paths and old not in paths and old in repositories:
             paths[old] = paths.pop(new)
+        disabled = set(self.state.get("disabled_repositories", []))
+        if new in disabled and old not in disabled and old in repositories:
+            disabled.remove(new)
+            disabled.add(old)
+            self.state["disabled_repositories"] = sorted(disabled)
         # Persist recovered permissions before retiring the recovery record.
         self.sync()
         journal.unlink()
@@ -334,8 +341,12 @@ class Store:
         config = self.root / "config"
         atomic(config / "passwd", "[users]\n" + "".join(f"{u} = {p}\n" for u, p in self.state["users"].items()))
         authz = "[groups]\n" + "".join(f"{g} = {chr(44).join(m)}\n" for g, m in self.state.get("groups", {}).items()) + "\n"
+        disabled = set(self.state.get("disabled_repositories", []))
         for repo, perms in self.state["repositories"].items():
             authz += f"[{repo}:/]\n* =\n"
+            if repo in disabled:
+                authz += "\n"
+                continue
             authz += "".join(f"{u} = {v}\n" for u, v in perms.items()) + "\n"
             for path, rules in self.state.get("path_permissions", {}).get(repo, {}).items():
                 authz += f"[{repo}:{path}]\n" + "".join(f"{u} = {v}\n" for u, v in rules.items()) + "\n"
@@ -351,10 +362,29 @@ class Store:
             raise Error("仓库不存在", 404)
         return self.repos / key
 
+    def is_repo_enabled(self, key):
+        return key not in self.state.get("disabled_repositories", [])
+
+    def set_repo_enabled(self, key, enabled):
+        if not isinstance(enabled, bool):
+            raise Error("仓库启用状态必须为布尔值")
+        with self.lock:
+            path = self.repo(key)
+            disabled = set(self.state.get("disabled_repositories", []))
+            if enabled:
+                disabled.discard(key)
+            else:
+                disabled.add(key)
+            self.state["disabled_repositories"] = sorted(disabled)
+            self.configure_repo(path, enabled=enabled)
+            self.sync()
+            return self.summary(key)
+
     def summary(self, key):
         path = str(self.repo(key))
         return {"name": key, "revision": int(run("svnlook", "youngest", path).strip()),
-                "uuid": run("svnlook", "uuid", path).strip()}
+                "uuid": run("svnlook", "uuid", path).strip(),
+                "enabled": self.is_repo_enabled(key)}
 
     def create_repo(self, key):
         name(key)
@@ -368,9 +398,10 @@ class Store:
             self.sync()
             return self.summary(key)
 
-    def configure_repo(self, path):
+    def configure_repo(self, path, enabled=True):
         config = self.root / "config"
-        atomic(path / "conf" / "svnserve.conf", "[general]\nanon-access = none\nauth-access = write\n"
+        auth_access = "write" if enabled else "none"
+        atomic(path / "conf" / "svnserve.conf", f"[general]\nanon-access = none\nauth-access = {auth_access}\n"
                f"password-db = {(config / 'passwd').as_posix()}\nauthz-db = {(config / 'authz').as_posix()}\nrealm = FnSVN\n")
 
     def scan(self, raw, depth=3):
@@ -606,6 +637,7 @@ def delete_repository(server, key, confirmation):
     moved, removed, archive = False, False, None
     original_permissions = None
     original_paths = None
+    original_disabled = False
     store.lock.acquire()
     try:
         with store.lock, store.backup_lock:
@@ -616,12 +648,14 @@ def delete_repository(server, key, confirmation):
                 raise Error("仓库文件不存在或格式不完整", 409)
             original_permissions = dict(store.state["repositories"][key])
             original_paths = store.state.get("path_permissions", {}).get(key)
+            original_disabled = not store.is_repo_enabled(key)
             pause_svn(server)
             parent = store.root / "deleted" / (datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ") + "-" + secrets.token_hex(6))
             parent.mkdir(parents=True, mode=0o700)
             archive = parent / key
             atomic(parent / "metadata.json", json.dumps({"name": key, "originalPath": str(source),
-                                                         "permissions": original_permissions, "pathPermissions": original_paths}, ensure_ascii=False, indent=2))
+                                                         "permissions": original_permissions, "pathPermissions": original_paths,
+                                                         "enabled": not original_disabled}, ensure_ascii=False, indent=2))
             try:
                 promote_repository(source, archive)
                 moved = True
@@ -635,6 +669,10 @@ def delete_repository(server, key, confirmation):
                     raise Error("回收副本版本校验失败，原仓库未删除", 500)
             del store.state["repositories"][key]
             store.state.get("path_permissions", {}).pop(key, None)
+            if original_disabled:
+                disabled = set(store.state.get("disabled_repositories", []))
+                disabled.discard(key)
+                store.state["disabled_repositories"] = sorted(disabled)
             removed = True
             store.sync()
             warning = ""
@@ -655,6 +693,10 @@ def delete_repository(server, key, confirmation):
         if removed and original_permissions is not None:
             store.state["repositories"][key] = original_permissions
             if original_paths is not None: store.state.setdefault("path_permissions", {})[key] = original_paths
+            if original_disabled:
+                disabled = set(store.state.get("disabled_repositories", []))
+                disabled.add(key)
+                store.state["disabled_repositories"] = sorted(disabled)
             store.sync()
         raise
     finally:
@@ -675,6 +717,7 @@ def rename_repository(server, key, new_name):
     moved, registered, journal_created = False, False, False
     journal = store.root / "config" / "rename-journal.json"
     permissions = None
+    was_disabled = False
     try:
         with store.backup_lock:
             source = store.repo(key)
@@ -690,6 +733,7 @@ def rename_repository(server, key, new_name):
             if journal.exists():
                 raise Error("存在尚未恢复的改名记录，请重启应用完成恢复", 409)
             permissions = dict(store.state["repositories"][key])
+            was_disabled = not store.is_repo_enabled(key)
             pause_svn(server)
             atomic(journal, json.dumps({"oldName": key, "newName": new_name,
                                        "sourcePath": str(source), "targetPath": str(target)}, ensure_ascii=False))
@@ -700,6 +744,11 @@ def rename_repository(server, key, new_name):
             store.state["repositories"][new_name] = permissions
             paths = store.state.setdefault("path_permissions", {})
             if key in paths: paths[new_name] = paths.pop(key)
+            if was_disabled:
+                disabled = set(store.state.get("disabled_repositories", []))
+                disabled.discard(key)
+                disabled.add(new_name)
+                store.state["disabled_repositories"] = sorted(disabled)
             registered = True
             store.sync()
             result = store.summary(new_name)
@@ -716,6 +765,11 @@ def rename_repository(server, key, new_name):
             store.state["repositories"][key] = permissions
             paths = store.state.setdefault("path_permissions", {})
             if new_name in paths: paths[key] = paths.pop(new_name)
+            if was_disabled:
+                disabled = set(store.state.get("disabled_repositories", []))
+                disabled.discard(new_name)
+                disabled.add(key)
+                store.state["disabled_repositories"] = sorted(disabled)
             store.sync()
         if journal_created:
             journal.unlink(missing_ok=True)
@@ -845,7 +899,7 @@ def save_settings(server, body):
 
 
 class Handler(BaseHTTPRequestHandler):
-    server_version = "FnSVN/0.7.4"
+    server_version = "FnSVN/0.7.5"
 
     def log_message(self, fmt, *args):
         # Do not log cookies, credentials or request bodies.
@@ -1053,6 +1107,8 @@ class Handler(BaseHTTPRequestHandler):
                     return self.send(200, self.store.activity(key, author))
             if len(parts) == 4 and parts[3] == "rename" and method == "POST":
                 return self.send(200, rename_repository(self.server, key, self.body().get("name")))
+            if len(parts) == 4 and parts[3] == "status" and method == "PUT":
+                return self.send(200, self.store.set_repo_enabled(key, self.body().get("enabled")))
             if len(parts) == 4 and parts[3] == "access-preview" and method == "GET":
                 q = parse_qs(parsed.query)
                 username, path = q.get("user", [""])[0], q.get("path", ["/"])[0]
@@ -1063,6 +1119,8 @@ class Handler(BaseHTTPRequestHandler):
                 with self.store.lock:
                     if username not in self.store.state["users"]:
                         raise Error("无效的用户或路径")
+                    if not self.store.is_repo_enabled(key):
+                        return self.send(200, {"permission": "", "source": "/", "disabled": True})
                     sections = {"/": {"*": "", **self.store.state["repositories"][key]}, **self.store.state.get("path_permissions", {}).get(key, {})}
                     groups = self.store.state.get("groups", {})
                     path = normalized
@@ -1071,8 +1129,8 @@ class Handler(BaseHTTPRequestHandler):
                         matched = [rules["@" + g] for g, members in groups.items() if username in members and "@" + g in rules]
                         if username in rules: matched.append(rules[username])
                         if "*" in rules: matched.append(rules["*"])
-                        if matched: return self.send(200, {"permission": max(matched, key=len), "source": path})
-                        if path == "/": return self.send(200, {"permission": "", "source": path})
+                        if matched: return self.send(200, {"permission": max(matched, key=len), "source": path, "disabled": False})
+                        if path == "/": return self.send(200, {"permission": "", "source": path, "disabled": False})
                         path = path.rsplit("/", 1)[0] or "/"
             if len(parts) == 4 and parts[3] == "access-rules" and method == "PUT":
                 body = self.body()

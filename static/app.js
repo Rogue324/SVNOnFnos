@@ -148,6 +148,11 @@ function renderRepositories() {
   content().insertAdjacentHTML('beforeend', authHelp());
 }
 
+function repoToggleButton(name, enabled) {
+  const on = enabled !== false;
+  return `<button type="button" class="repo-toggle ${on ? 'is-on' : 'is-off'}" role="switch" aria-checked="${on ? 'true' : 'false'}" data-toggle-repo="${esc(name)}" data-repo-enabled="${on ? '1' : '0'}" title="${on ? '点击停用仓库' : '点击启用仓库'}" aria-label="${on ? '停用仓库' : '启用仓库'} ${esc(name)}"><span class="repo-toggle-track" aria-hidden="true"><span class="repo-toggle-thumb"></span></span><span class="repo-toggle-label">${on ? '已启用' : '已停用'}</span></button>`;
+}
+
 function renderRepositoryCards(filter) {
   const repos = state.overview.repositories.filter(repo => repo.name.toLowerCase().includes(filter.toLowerCase()));
   const target = $('#repository-list');
@@ -157,7 +162,7 @@ function renderRepositoryCards(filter) {
     return;
   }
   target.classList.remove('is-empty');
-  target.innerHTML = repos.map(repo => `<article class="repo-card" tabindex="0" role="link" data-card-repo="${esc(repo.name)}" aria-label="管理仓库 ${esc(repo.name)}"><div class="repo-card-top"><span class="folder-icon">${icon("folder")}</span><span class="revision-badge">r${esc(repo.revision)}</span></div><h3>${esc(repo.name)}</h3><p class="repo-description">SUBVERSION REPOSITORY</p>${urlBox(repo.name)}<div class="repo-actions"><button class="text-button" data-repo="${esc(repo.name)}">浏览仓库 <span>→</span></button><button class="text-button" data-permissions="${esc(repo.name)}">访问权限</button><button class="text-button" data-rename-repo="${esc(repo.name)}">改名</button><button class="text-button danger-text" data-delete-repo="${esc(repo.name)}">删除</button></div></article>`).join('');
+  target.innerHTML = repos.map(repo => `<article class="repo-card${repo.enabled === false ? ' is-disabled' : ''}" tabindex="0" role="link" data-card-repo="${esc(repo.name)}" aria-label="管理仓库 ${esc(repo.name)}"><div class="repo-card-top"><span class="folder-icon">${icon("folder")}</span><div class="repo-card-top-right">${repoToggleButton(repo.name, repo.enabled)}<span class="revision-badge">r${esc(repo.revision)}</span></div></div><h3>${esc(repo.name)}</h3><p class="repo-description">${repo.enabled === false ? '已停用 · 禁止 SVN 客户端读写' : 'SUBVERSION REPOSITORY'}</p>${urlBox(repo.name)}<div class="repo-actions"><button class="text-button" data-repo="${esc(repo.name)}">浏览仓库 <span>→</span></button><button class="text-button" data-permissions="${esc(repo.name)}">访问权限</button><button class="text-button" data-rename-repo="${esc(repo.name)}">改名</button><button class="text-button danger-text" data-delete-repo="${esc(repo.name)}">删除</button></div></article>`).join('');
 }
 
 function renderUsers() {
@@ -194,7 +199,8 @@ async function openRepository(name, tab = 'files', path = '') {
 
 function renderDetail() {
   const detail = state.detail;
-  content().innerHTML = `<div class="detail-toolbar"><div class="detail-heading"><span class="folder-icon">${icon("folder")}</span><div><h2>${esc(detail.name)}</h2><div class="detail-meta"><span>最新版本 r${esc(detail.revision)}</span><span>UUID ${esc(detail.uuid)}</span></div></div></div><div class="detail-actions"><button class="button small" data-action="back">← 所有仓库</button><button class="button small" data-backup="${esc(detail.name)}">创建备份</button><button class="button small" data-rename-repo="${esc(detail.name)}">改名</button><button class="button small danger" data-delete-repo="${esc(detail.name)}">删除仓库</button></div></div><div class="detail-url">${urlBox(detail.name)}</div><div class="tabs"><button class="tab ${state.tab === 'files' ? 'active' : ''}" data-tab="files">文件浏览</button><button class="tab ${state.tab === 'log' ? 'active' : ''}" data-tab="log">提交日志</button><button class="tab ${state.tab === 'activity' ? 'active' : ''}" data-tab="activity">提交热力图</button><button class="tab ${state.tab === 'permissions' ? 'active' : ''}" data-tab="permissions">访问权限</button></div><div id="detail-content"></div>`;
+  const enabled = detail.enabled !== false;
+  content().innerHTML = `<div class="detail-toolbar"><div class="detail-heading"><span class="folder-icon${enabled ? '' : ' is-disabled'}">${icon("folder")}</span><div><h2>${esc(detail.name)}</h2><div class="detail-meta"><span class="detail-status ${enabled ? 'is-enabled' : 'is-disabled'}">${enabled ? '已启用' : '已停用'}</span><span>最新版本 r${esc(detail.revision)}</span><span>UUID ${esc(detail.uuid)}</span></div></div></div><div class="detail-actions">${repoToggleButton(detail.name, enabled)}<button class="button small" data-action="back">← 所有仓库</button><button class="button small" data-backup="${esc(detail.name)}">创建备份</button><button class="button small" data-rename-repo="${esc(detail.name)}">改名</button><button class="button small danger" data-delete-repo="${esc(detail.name)}">删除仓库</button></div></div>${enabled ? '' : '<div class="notice warning repo-disabled-banner" role="status">当前仓库已停用：SVN 客户端已完全禁止检出、更新与提交。原有访问权限已保留，重新启用后自动恢复；Web 控制台仍可浏览文件、查看历史与创建备份。</div>'}<div class="detail-url">${urlBox(detail.name)}</div><div class="tabs"><button class="tab ${state.tab === 'files' ? 'active' : ''}" data-tab="files">文件浏览</button><button class="tab ${state.tab === 'log' ? 'active' : ''}" data-tab="log">提交日志</button><button class="tab ${state.tab === 'activity' ? 'active' : ''}" data-tab="activity">提交热力图</button><button class="tab ${state.tab === 'permissions' ? 'active' : ''}" data-tab="permissions">访问权限</button></div><div id="detail-content"></div>`;
   if (state.tab === 'files') renderFiles();
   else if (state.tab === 'log') renderLog();
   else if (state.tab === 'activity') renderActivity();
@@ -316,7 +322,7 @@ function renderPermissions() {
   advanced.querySelector('[data-add-group]').onclick = () => openModal('新建用户组', '<label>用户组名称<input name="group" required maxlength="64" pattern="[A-Za-z][A-Za-z0-9_\\-]{0,63}" placeholder="例如 developers"></label><p class="field-help">以英文字母开头，可包含字母、数字、连字符和下划线。</p>', async values => { const group = values.group.trim(); if (Object.hasOwn(groups, group)) throw new Error('用户组已存在'); groups[group] = []; drawGroups(); drawPaths(); });
   advanced.querySelector('[data-add-path]').onclick = () => openModal('添加子目录', '<label>仓库目录路径<input name="path" required placeholder="例如 /trunk/project"></label><p class="field-help">从仓库根目录开始，以 / 开头。</p>', async values => { const path = values.path.trim(); if (!path.startsWith('/') || path === '/' || path.endsWith('/') || /[\[\]\\\r\n]/.test(path) || path.slice(1).split('/').some(x => !x || x === '.' || x === '..')) throw new Error('请输入有效的子目录路径，例如 /trunk/project'); if (Object.hasOwn(paths, path)) throw new Error('该目录已存在'); paths[path] = {}; drawPaths(); });
   advanced.addEventListener('submit', async event => { event.preventDefault(); const button = advanced.querySelector('[type="submit"]'); button.disabled = true; try { const rootValues = Object.fromEntries([...panel.querySelectorAll('[data-permission-user]')].map(s => [s.dataset.permissionUser, s.value])); await api(`${repoApi(state.detail.name)}/access-rules`, { method: 'PUT', body: {groups, paths} }); state.detail.groups = groups; state.detail.pathPermissions = paths; renderPermissions(); panel.querySelectorAll('[data-permission-user]').forEach(s => { if (Object.hasOwn(rootValues, s.dataset.permissionUser)) s.value = rootValues[s.dataset.permissionUser]; }); toast('用户组与子目录授权已保存'); } catch (error) { toast(error.message, true); } finally { button.disabled = false; } });
-  $('#access-preview', panel).addEventListener('submit', async event => { event.preventDefault(); const output = $('#access-result', panel); output.textContent = '正在查询…'; try { const q = new URLSearchParams({user: event.target.elements.user.value, path: event.target.elements.path.value}); const r = await api(`${repoApi(state.detail.name)}/access-preview?${q}`); output.textContent = `实际权限：${r.permission === 'rw' ? '读写' : r.permission === 'r' ? '只读' : '无权限'} · 生效路径：${r.source}`; } catch (error) { output.textContent = error.message; } });
+  $('#access-preview', panel).addEventListener('submit', async event => { event.preventDefault(); const output = $('#access-result', panel); output.textContent = '正在查询…'; try { const q = new URLSearchParams({user: event.target.elements.user.value, path: event.target.elements.path.value}); const r = await api(`${repoApi(state.detail.name)}/access-preview?${q}`); output.textContent = r.disabled ? '实际权限：无权限（仓库已停用，重新启用后恢复已保存的权限配置）' : `实际权限：${r.permission === 'rw' ? '读写' : r.permission === 'r' ? '只读' : '无权限'} · 生效路径：${r.source}`; } catch (error) { output.textContent = error.message; } });
   const form = $('#permissions-form', panel);
   if (form) form.addEventListener('submit', async event => { event.preventDefault(); const button = form.querySelector('[type="submit"]'), values = Object.create(null); form.querySelectorAll('[data-permission-user]').forEach(select => { if (select.value) values[select.dataset.permissionUser] = select.value; }); button.disabled = true; try { await api(`${repoApi(state.detail.name)}/permissions`, {method: 'PUT', body: {permissions: values}}); state.detail.permissions = values; toast('仓库权限已保存'); } catch (error) { toast(error.message, true); } finally { button.disabled = false; } });
   drawGroups(); drawPaths();
@@ -406,6 +412,46 @@ function deleteRepository(name) {
   const button = $('#modal-form button[type="submit"]');
   button.textContent = '确认删除仓库';
   button.className = 'button danger';
+}
+
+async function applyRepositoryStatus(name, enabled) {
+  const result = await api(`${repoApi(name)}/status`, { method: 'PUT', body: { enabled } });
+  await refreshOverview();
+  if (state.detail && state.detail.name === name) {
+    state.detail.enabled = result.enabled;
+    renderDetail();
+  } else if (state.view === 'repositories') {
+    const search = $('#repo-search');
+    renderRepositoryCards(search ? search.value : '');
+  }
+  toast(enabled ? `仓库「${name}」已启用，SVN 客户端访问已恢复` : `仓库「${name}」已停用，SVN 客户端已禁止读写`);
+}
+
+async function toggleRepository(name, currentlyEnabled, triggerButton) {
+  if (currentlyEnabled) {
+    $('#modal-title').textContent = '停用仓库';
+    $('#modal-body').innerHTML = `<div class="notice warning">停用仓库「${esc(name)}」后，所有 SVN 客户端将立即被完全禁止读写（检出、更新、提交均会被拒绝）。</div><p class="muted">仓库数据、版本历史及已配置的访问权限均会保留，重新启用后自动恢复，且不影响其他仓库运行。</p><div class="modal-actions"><button type="button" class="button" data-close-modal>取消</button><button type="button" class="button danger" id="confirm-disable-repo">确认停用</button></div><p class="form-error" id="modal-error" role="alert"></p>`;
+    $('#modal').showModal();
+    $('#confirm-disable-repo').onclick = async event => {
+      const btn = event.currentTarget;
+      btn.disabled = true;
+      $('#modal-error').textContent = '';
+      try {
+        await applyRepositoryStatus(name, false);
+        $('#modal').close();
+      } catch (error) {
+        $('#modal-error').textContent = error.message;
+        btn.disabled = false;
+      }
+    };
+    return;
+  }
+  if (triggerButton) triggerButton.disabled = true;
+  try {
+    await applyRepositoryStatus(name, true);
+  } finally {
+    if (triggerButton && triggerButton.isConnected) triggerButton.disabled = false;
+  }
 }
 
 function scanRepositories() {
@@ -616,6 +662,7 @@ document.addEventListener('click', async event => {
     else if (target.dataset.permissions !== undefined) await openRepository(target.dataset.permissions, 'permissions');
     else if (target.dataset.renameRepo !== undefined) renameRepository(target.dataset.renameRepo);
     else if (target.dataset.deleteRepo !== undefined) deleteRepository(target.dataset.deleteRepo);
+    else if (target.dataset.toggleRepo !== undefined) await toggleRepository(target.dataset.toggleRepo, target.dataset.repoEnabled !== '0', target);
     else if (target.dataset.copy !== undefined) await copyText(target.dataset.copy);
     else if (target.dataset.path !== undefined && state.detail) await openRepository(state.detail.name, 'files', target.dataset.path);
     else if (target.dataset.tab && state.detail) { state.tab = target.dataset.tab; renderDetail(); }
